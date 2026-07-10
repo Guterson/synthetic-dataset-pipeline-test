@@ -1,0 +1,31 @@
+"""
+\noindent Para validar as fronteiras elásticas locais e o amortecimento da rampa com base na densidade rítmica, o modelo fundamenta-se em três pilares da psicologia cognitiva e biomecânica musical:
+
+\begin{enumerate}
+    \item \textbf{O Modelo de Todd (Curvas e Inércia):} Todd \cite{todd1985, todd1989} propôs que o \textit{rubato} e as variações de andamento refletem a projeção motora humana de forças físicas (como a aceleração e a frenagem de massas). A aplicação da curva sigmoide em rampas sem destino explicita essa ``frenagem natural'', onde o pianista desacelera progressivamente até atingir uma velocidade de segurança (o platô), impedindo o colapso do pulso musical.
+    
+    \item \textbf{A Hipótese do Arco de Repp (Densidade e Estrutura):} Repp \cite{repp1992, repp1995} demonstrou empiricamente que o perfil temporal de uma frase tende a se comportar como um arco elástico. Crucialmente para o nosso modelo, a flexibilidade rítmica humana é severamente limitada pela densidade de eventos por segundo (Inter-Onset Intervals). Em passagens com alta densidade de notas (e.g., semicolcheias), o sistema motor exige alta estabilidade e previsibilidade para manter o controle mecânico dos dedos, o que justifica matematicamente o nosso fator de amortecimento ($\alpha$).
+    
+    \item \textbf{O Limiar de Isocronia e Jitter Contínuo:} O cérebro humano falha em agrupar pulsos isolados como um fluxo contínuo abaixo de 40 BPM (o limite inferior da percepção de pulso) \cite{clarke1988}. Ademais, o desvio humano nota a nota não é ruído branco (aleatório puro), mas sim correlacionado no tempo (ruído rosa/vermelho), simulado no framework através de um \textit{Smooth Random Walk}.
+\end{enumerate}
+
+% --- BIBLIOGRAFIA RECOMENDADA PARA O SEU ARQUIVO .BIB ---
+% @article{todd1985,
+%   author = {Todd, Neil P. McAngus},
+%   title = {A model of expressive timing in tonal music},
+%   journal = {Music Perception},
+%   volume = {3}, number = {1}, pages = {33--57}, year = {1985}
+% }
+% @article{repp1992,
+%   author = {Repp, Bruno H.},
+%   title = {A microstructural analysis of pianists' systematic expressivity in the performance of Chopin's {E}-minor {P}relude},
+%   journal = {The Journal of the Acoustical Society of America},
+%   volume = {92}, number = {4}, pages = {1922--1943}, year = {1992}
+% }
+% @incollection{clarke1988,
+%   author = {Clarke, Eric F.},
+%   title = {Generative principles in music performance},
+%   booktitle = {Generative Processes in Music},
+%   publisher = {Clarendon Press}, year = {1988}
+% }
+"""

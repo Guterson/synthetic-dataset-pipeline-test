@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://musicxml.org">
+<score-partwise version="4.0">
+  <!-- 1. METADADOS E ESTRUTURA DE PARTE -->
+  <work>
+    <work-title>Ode to Joy (Main Melody)</work-title>
+  </work>
+  <part-list>
+    <score-part id="P1">
+      <part-name>Piano</part-name>
+    </score-part>
+  </part-list>
+  
+  <part id="P1">
+    <!-- ================================================================= -->
+    <!-- COMPASSO 1: Fá#, Fá#, Sol, Lá -->
+    <!-- ================================================================= -->
+    <measure number="1">
+      <attributes>
+        <!-- 1 unidade de duration = 1 semínima (quarter note) -->
+        <divisions>1</divisions>
+        
+        <!-- Tom: Ré Maior (2 sustenidos: Fá# e Dó#) -->
+        <key>
+          <fifths>2</fifths>
+        </key>
+        
+        <!-- Fórmula: 4/4 (Quatro tempos por compasso) -->
+        <time>
+          <beats>4</beats>
+          <beat-type>4</beat-type>
+        </time>
+        
+        <clef>
+          <sign>G</sign>
+          <line>2</line>
+        </clef>
+      </attributes>
+      
+      <!-- ANDAMENTO ORIGINAL DE BEETHOVEN: 160 BPM para a Semínima -->
+      <direction>
+        <sound tempo="160"/>
+      </direction>
+
+      <!-- Nota 1: Fá# 4 (A alteração "1" indica o sustenido) -->
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 2: Fá# 4 -->
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 3: Sol 4 -->
+      <note>
+        <pitch>
+          <step>G</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 4: Lá 4 -->
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+    </measure>
+
+    <!-- ================================================================= -->
+    <!-- COMPASSO 2: Lá, Sol, Fá#, Mi -->
+    <!-- ================================================================= -->
+    <measure number="2">
+      <!-- Nota 1: Lá 4 -->
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 2: Sol 4 -->
+      <note>
+        <pitch>
+          <step>G</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 3: Fá# 4 -->
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 4: Mi 4 -->
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+    </measure>
+
+    <!-- ================================================================= -->
+    <!-- COMPASSO 3: Ré, Ré, Mi, Fá# -->
+    <!-- ================================================================= -->
+    <measure number="3">
+      <!-- Nota 1: Ré 4 -->
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 2: Ré 4 -->
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 3: Mi 4 -->
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+      
+      <!-- Nota 4: Fá# 4 -->
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+    </measure>
+
+    <!-- ================================================================= -->
+    <!-- COMPASSO 4: Fá# (pontuada), Mi (rápida), Mi (longa) -->
+    <!-- ================================================================= -->
+    <!-- Para fazer a nota pontuada e a nota rápida sem quebrar o esquema 
+         de divisions=1, alteramos temporariamente o relógio neste compasso -->
+    <measure number="4">
+      <attributes>
+        <!-- Agora 1 tempo passa a ser dividido em 2 partes (colcheias) -->
+        <divisions>2</divisions>
+      </attributes>
+      
+      <!-- Nota 1: Fá# 4 Pontuada (Dura 1 tempo e meio = 3 colcheias) -->
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>3</duration>
+        <type>quarter</type>
+        <dot/>
+      </note>
+      
+      <!-- Nota 2: Mi 4 Rápida (Dura meio tempo = 1 colcheia) -->
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>1</duration>
+        <type>eighth</type>
+      </note>
+      
+      <!-- Nota 3: Mi 4 Longa (Dura dois tempos inteiros = 4 colcheias) -->
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>4</duration>
+        <type>half</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>

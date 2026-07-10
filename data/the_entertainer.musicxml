@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://musicxml.org">
+<score-partwise version="4.0">
+  <work>
+    <work-title>The Entertainer - Main Motif</work-title>
+  </work>
+  <part-list>
+    <score-part id="P1">
+      <part-name>Piano Solo</part-name>
+    </score-part>
+  </part-list>
+  
+  <part id="P1">
+    <!-- ================================================================= -->
+    <!-- COMPASSO 1: Anacruse/Preparação para o tema -->
+    <!-- ================================================================= -->
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths></key> <!-- Dó Maior -->
+        <time><beats>2</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <direction>
+        <sound tempo="76"/>
+      </direction>
+
+      <!-- Ré 4 (Semicolcheia) -->
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Ré# 4 (Semicolcheia) -->
+      <note>
+        <pitch><step>D</step><alter>1</alter><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Mi 4 (Semicolcheia) -->
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Dó 5 (Semínima) -->
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+      </note>
+      <!-- Pausa de Semicolcheia para fechar o compasso de 2/4 -->
+      <note>
+        <rest/>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+    </measure>
+
+    <!-- ================================================================= -->
+    <!-- COMPASSO 2: O balanço sincopado -->
+    <!-- ================================================================= -->
+    <measure number="2">
+      <!-- Mi 4 (Semicolcheia) -->
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Dó 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Mi 4 (Semicolcheia) -->
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Dó 5 (Semínima) -->
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+      </note>
+      <!-- Pausa de Semicolcheia -->
+      <note>
+        <rest/>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+    </measure>
+
+    <!-- ================================================================= -->
+    <!-- COMPASSO 3 -->
+    <!-- ================================================================= -->
+    <measure number="3">
+      <!-- Mi 4 (Semicolcheia) -->
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Dó 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Mi 4 (Semicolcheia) -->
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Dó 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Ré 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>D</step><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Ré# 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>D</step><alter>1</alter><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Mi 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>E</step><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Dó 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+    </measure>
+
+    <!-- ================================================================= -->
+    <!-- COMPASSO 4: Finalização da primeira frase -->
+    <!-- ================================================================= -->
+    <measure number="4">
+      <!-- Ré 5 (Semicolcheia) -->
+      <note>
+        <pitch><step>D</step><octave>5</octave></pitch>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+      <!-- Si 4 (Colcheia) -->
+      <note>
+        <pitch><step>B</step><octave>4</octave></pitch>
+        <duration>2</duration>
+        <type>eighth</type>
+      </note>
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+      </note>
+      <!-- Pausa de Semicolcheia para fechar o tempo do compasso -->
+      <note>
+        <rest/>
+        <duration>1</duration>
+        <type>16th</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>
