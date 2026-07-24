@@ -1,0 +1,15 @@
+# Python bytecode caches
+__pycache__/
+*.pyc
+
+# Local binary assets (Never upload local compiled C libraries)
+*.so
+*.dylib
+*.dll
+~/.local/
+
+# Heavy local testing dataset data
+data/output_test/
+*.wav
+*.mid
+*.mp3

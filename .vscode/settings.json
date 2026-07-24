@@ -1,0 +1,13 @@
+{
+    "cSpell.words": [
+        "datamodels",
+        "fftconvolve",
+        "mido",
+        "musicxml",
+        "samplerate",
+        "Sfizz",
+        "TPQN"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
+}
