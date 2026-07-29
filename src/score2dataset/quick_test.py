@@ -79,10 +79,6 @@ def run_diagnostics() -> int:
         print("\n=== PIPELINE DOMAIN FAILURE TRAPPED ===", file=sys.stderr)
         print(f"Diagnostic Exception Intercepted: {error}", file=sys.stderr)
         return 1
-    except Exception as unexpected_error:
-        print("\n=== UNEXPECTED CRITICAL FAILURE OCCURRED ===", file=sys.stderr)
-        print(f"System Error Trace: {unexpected_error}", file=sys.stderr)
-        return 1
 
 
 if __name__ == "__main__":
