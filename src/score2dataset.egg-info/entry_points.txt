@@ -1,0 +1,2 @@
+[console_scripts]
+score2dataset = score2dataset.main:main

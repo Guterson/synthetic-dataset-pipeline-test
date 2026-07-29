@@ -1,15 +1,24 @@
-# Python bytecode caches
-__pycache__/
-*.pyc
-
-# Local binary assets (Never upload local compiled C libraries)
-*.so
-*.dylib
-*.dll
-~/.local/
-
-# Heavy local testing dataset data
+# --- Audio Synthesis Data & Temp Caches ---
 data/output_test/
+data/inputs/
+data/assets/
 *.wav
 *.mid
-*.mp3
+*.midi
+
+# --- Python & Environment Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+
+# --- Virtual Environments (Miniforge / Conda / venv) ---
+.venv/
+env/
+venv/
+
+# --- IDE & Local Machine Settings ---
+.vscode/
+.idea/
+.DS_Store

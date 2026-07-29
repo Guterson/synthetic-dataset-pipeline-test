@@ -1,9 +1,18 @@
 {
     "cSpell.words": [
         "datamodels",
+        "DATASETENTRY",
+        "downmix",
+        "downmixed",
+        "Downmixes",
         "fftconvolve",
+        "getloadavg",
         "mido",
         "musicxml",
+        "NOTEEVENT",
+        "partwise",
+        "PERFORMANCESCORE",
+        "polyphase",
         "samplerate",
         "Sfizz",
         "TPQN"

@@ -1,0 +1,4 @@
+mido>=1.2.10
+soundfile>=0.12.1
+numpy>=1.22.0
+scipy>=1.8.0

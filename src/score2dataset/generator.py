@@ -10,16 +10,18 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Any
 
+from score2dataset.audio_engine import SfizzRenderEngine
 from score2dataset.datamodels import PerformanceScore
+from score2dataset.exceptions import ProcessorError
 from score2dataset.exporters.midi_exporter import MidiExporter
 from score2dataset.processors.rir_convolve import RirConvolver
-from score2dataset.wrapper import AudioEngine
 
 
 def _parallel_worker_thunk(
     score_data: PerformanceScore,
-    engine: AudioEngine,
+    engine_config: dict[str, Any],
     rir_path: Path,
     output_dir: Path,
     filename: str,
@@ -30,50 +32,45 @@ def _parallel_worker_thunk(
     """
     midi_exporter = MidiExporter()
     convolver = RirConvolver()
+    engine = SfizzRenderEngine(**engine_config)
 
     with tempfile.TemporaryDirectory() as local_cache_dir:
-        ssd_path = Path(local_cache_dir)
+        ssd_path: Path = Path(local_cache_dir)
+        temp_midi: Path = ssd_path / "normalized.mid"
+        temp_wav: Path = ssd_path / "dry_render.wav"
+        temp_wet_wav: Path = ssd_path / "wet_render.wav"
 
-        temp_midi = ssd_path / "normalized.mid"
-        temp_wav = ssd_path / "dry_render.wav"
-        temp_wet_wav = ssd_path / "wet_render.wav"
-
-        # 1. Save absolute timeline performance to scratchpad disk
         midi_exporter.export_score(score_data, temp_midi)
-
-        # 2. Render dry PCM blocks using the abstract synthesizer extension
         engine.render_audio(midi_path=temp_midi, output_wav_path=temp_wav)
 
-        # 3. Apply high-fidelity resampling, spatial convolution, and 16-bit mapping
         convolver.process_audio(
             dry_wav_path=temp_wav, rir_path=rir_path, output_wav_path=temp_wet_wav
         )
 
-        # 4. Move the finished 48kHz, 16-bit track back onto persistent space
-        final_destination = output_dir / f"{filename}.wav"
-
+        final_destination: Path = output_dir / f"{filename}.wav"
         shutil.copy(temp_wet_wav, final_destination)
-
         return final_destination
 
 
 class DatasetGenerator:
-    """Manages secure parallel execution routines across local hardware pools [1]."""
+    """Manages secure parallel execution routines across local hardware pools."""
 
-    def __init__(self, engines: list[AudioEngine], rir_paths: list[str]) -> None:
+    def __init__(
+        self, engine_configs: list[dict[str, Any]], rir_paths: list[str]
+    ) -> None:
         """Initializes the batch engine with balancing asset pools.
 
         Args:
-            engines: A list of initialized engine instances subclassing AudioEngine.
+            engine_configs: List of configuration maps to spawn AudioEngine instances.
             rir_paths: A list of public string paths pointing to RIR assets (.wav).
 
         Raises:
-            ValueError: If either the engine pool or RIR pool is empty.
+            ProcessorError: If either the engine configuration pool or RIR pool is empty.
         """
-        if not engines or not rir_paths:
-            raise ValueError("Asset distribution pools cannot be empty.")
+        if not engine_configs or not rir_paths:
+            raise ProcessorError("Asset distribution pools cannot be empty.")
 
-        self.engines: list[AudioEngine] = engines
+        self.engine_configs: list[dict[str, Any]] = engine_configs
         self.rir_pool: list[Path] = [Path(p).resolve() for p in rir_paths]
 
     def generate_batch(
@@ -95,50 +92,59 @@ class DatasetGenerator:
         Returns:
             A list of Path destinations tracking every successfully generated file.
         """
-        resolved_out_dir = Path(output_dir).resolve()
+        resolved_out_dir: Path = Path(output_dir).resolve()
         resolved_out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Compute process allocation boundaries (Clamp usage to max 70% of local cores) [1]
-        available_cores = os.cpu_count() or 1
-        safe_worker_limit = max(1, int(available_cores * 0.7))
+        safe_worker_limit: int = self._calculate_safe_worker_limit()
+        processing_tasks: list[
+            tuple[PerformanceScore, dict[str, Any], Path, Path, str]
+        ] = []
+        task_counter: int = 0
 
-        processing_tasks = []
-        task_counter = 0
-
-        # Build balanced non-cartesian task matrices
         for score in base_scores:
-            base_name = score.source.stem
+            base_name: str = score.source.stem
 
             for v_idx in range(variation_count):
-                instance_filename = f"{base_name}_var_{v_idx}"
+                instance_filename: str = f"{base_name}_var_{v_idx}"
+                mutated_score: PerformanceScore = copy.deepcopy(score)
 
-                # Clone the base score container to isolate random mutation states
-                mutated_score = copy.deepcopy(score)
-
-                # --- FUTURE ALTERATION CALL WILL INJECT HERE ---
-                # alterations.apply_drift_variations(mutated_score, seed=v_idx)
-
-                # Balance assignments round-robin fashion instead of cross-multiplying pools [1]
-                selected_engine = self.engines[task_counter % len(self.engines)]
-                selected_rir = self.rir_pool[task_counter % len(self.rir_pool)]
+                selected_config: dict[str, Any] = self.engine_configs[
+                    task_counter % len(self.engine_configs)
+                ]
+                selected_rir: Path = self.rir_pool[task_counter % len(self.rir_pool)]
                 task_counter += 1
 
-                # Queue the clean unpacked parameters into the process payload list
                 processing_tasks.append(
                     (
                         mutated_score,
-                        selected_engine,
+                        selected_config,
                         selected_rir,
                         resolved_out_dir,
                         instance_filename,
                     )
                 )
 
-        # Launch the multiprocessing core pool using the calculated hardware safety cap [1]
         completed_records: list[Path] = []
         with multiprocessing.Pool(processes=safe_worker_limit) as pool:
-            # starmap unpacks the task tuples across workers concurrently
-            results = pool.starmap(_parallel_worker_thunk, processing_tasks)
+            results: list[Path] = pool.starmap(_parallel_worker_thunk, processing_tasks)
             completed_records.extend(results)
 
         return completed_records
+
+    def _calculate_safe_worker_limit(self) -> int:
+        """Computes hardware allocation limits based on live system load thresholds."""
+        available_cores: int = os.cpu_count() or 1
+
+        try:
+            # os.getloadavg() returns (1-min, 5-min, 15-min) system load metrics
+            one_min_load: float = os.getloadavg()[0]
+
+            # If the current 1-minute load exceeds 70% of a single core's capacity
+            if one_min_load > (available_cores * 0.7):
+                # Scale down aggressively to avoid choking an already stressed machine
+                return max(1, int(available_cores * 0.3))
+        except (AttributeError, OSError):
+            # Fallback guard for environments where load averages cannot be requested
+            pass
+
+        return max(1, int(available_cores * 0.7))

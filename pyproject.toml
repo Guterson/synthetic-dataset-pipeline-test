@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "score2dataset"
+version = "0.1.0"
+description = "Bulk performance variation audio dataset generator for onset detection models."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Lab User", email = "labuser@college.edu" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+]
+dependencies = [
+    "mido>=1.2.10",
+    "soundfile>=0.12.1",
+    "numpy>=1.22.0",
+    "scipy>=1.8.0",
+]
+
+[project.scripts]
+score2dataset = "score2dataset.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"score2dataset" = ["py.typed"]

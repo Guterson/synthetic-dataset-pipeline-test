@@ -11,7 +11,7 @@ from pathlib import Path
 
 from score2dataset.generator import DatasetGenerator
 from score2dataset.parsers.musicxml_parser import MusicXMLParser
-from score2dataset.wrapper import SfizzRenderEngine
+from score2dataset.audio_engine import SfizzRenderEngine
 
 # from score2dataset.validators import validate_musicxml
 # from score2dataset.validators import validate_sfz

@@ -9,7 +9,9 @@ import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+from score2dataset.exceptions import AudioEngineError  # Safe central import
 
 
 class AudioEngine(ABC):
@@ -66,7 +68,13 @@ class SfizzRenderEngine(AudioEngine):
         if binary_path:
             self.binary: Path = Path(binary_path).resolve()
         else:
-            self.binary = self._discover_binary()
+            discovered_bin: Path | None = self._discover_binary()
+            if discovered_bin is None:
+                raise FileNotFoundError(
+                    "Could not automatically locate the 'sfizz_render' binary on this system. "
+                    "Please provide an explicit 'binary_path'."
+                )
+            self.binary = discovered_bin
 
         if not self.binary.exists():
             raise FileNotFoundError(f"Sfizz rendering binary not found: {self.binary}")
@@ -86,8 +94,8 @@ class SfizzRenderEngine(AudioEngine):
 
         # Perform a single, exhaustive system search using the combined paths
         lookup: str | None = shutil.which(
-            "sfizz_render", path=search_paths
-        ) or shutil.which("sfizz-render", path=search_paths)
+            cmd="sfizz_render", path=search_paths
+        ) or shutil.which(cmd="sfizz-render", path=search_paths)
 
         if lookup:
             return Path(lookup)
@@ -128,9 +136,11 @@ class SfizzRenderEngine(AudioEngine):
                 check=True,
             )
         except subprocess.CalledProcessError as error:
-            error_details: str | Literal["Unknown fault."] = (
+            error_details: Any | Literal["Unknown fault."] = (
                 error.stderr.strip() if error.stderr else "Unknown fault."
             )
-            raise RuntimeError(
-                f"Sfizz engine rendering execution failed.\nDetails: {error_details}"
+            raise AudioEngineError(
+                message="Sfizz engine rendering execution failed.",
+                returncode=error.returncode,
+                details=error_details,
             ) from error

@@ -11,6 +11,8 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import fftconvolve, resample_poly
 
+from score2dataset.exceptions import ProcessorError
+
 
 class RirConvolver:
     """Applies acoustic physical space characteristics and normalizes bit depth maps."""
@@ -38,50 +40,62 @@ class RirConvolver:
             output_wav_path: Target destination path to store the processed wet file.
 
         Raises:
-            RuntimeError: If any DSP matrix operation or array transformation fails.
+            ProcessorError: If any DSP matrix operation or array transformation fails.
         """
         try:
-            # 1. Load data as 64-bit floats between -1.0 and 1.0
-            dry_data, dry_sr = sf.read(str(dry_wav_path))
-            rir_data, rir_sr = sf.read(str(rir_path))
+            dry_data, dry_sr = sf.read(dry_wav_path, dtype="float64")
+            rir_data, rir_sr = sf.read(rir_path, dtype="float64")
 
-            # 2. Force Pure Mono Downmixing Immediately
-            if len(dry_data.shape) > 1:
-                dry_data = np.mean(dry_data, axis=1)
+            dry_mono: np.ndarray = self._to_mono(dry_data)
+            rir_mono: np.ndarray = self._to_mono(rir_data)
 
-            if len(rir_data.shape) > 1:
-                rir_data = np.mean(rir_data, axis=1)
+            working_sr: int = max(dry_sr, rir_sr)
+            dry_matched: np.ndarray = self._resample(dry_mono, dry_sr, working_sr)
+            rir_matched: np.ndarray = self._resample(rir_mono, rir_sr, working_sr)
 
-            # 3. High-Fidelity Resampling to Target 48kHz
-            if dry_sr != self.target_sr:
-                gcd = np.gcd(self.target_sr, dry_sr)
-                dry_data = resample_poly(dry_data, self.target_sr // gcd, dry_sr // gcd)
+            rir_normalized: np.ndarray = self._normalize_rir_peak(rir_data=rir_matched)
 
-            if rir_sr != self.target_sr:
-                gcd = np.gcd(self.target_sr, rir_sr)
-                rir_data = resample_poly(rir_data, self.target_sr // gcd, rir_sr // gcd)
+            wet_signal: np.ndarray = fftconvolve(
+                dry_matched, rir_normalized, mode="full"
+            )
 
-            # 4. Normalize the RIR Only (Preserves original dry audio velocity/volume)
-            rir_peak = np.max(np.abs(rir_data))
-            if rir_peak > 0:
-                rir_data = rir_data / rir_peak
+            clipped_signal: np.ndarray = np.clip(wet_signal, -1.0, 1.0)
+            pcm16_data: np.ndarray = (clipped_signal * 32767.0).astype(dtype=np.int16)
 
-            # 5. Mono Frequency-Domain Overlap-Save Convolution
-            wet_data = fftconvolve(dry_data, rir_data, mode="full")
-
-            # 6. Safety Headroom Clip
-            # We do NOT normalize to 1.0 here. We only apply a hard ceiling safety clip
-            # to protect the system, though files should naturally maintain their MIDI
-            # velocity curves.
-            wet_data = np.clip(wet_data, -1.0, 1.0)
-
-            # 7. Fixed Bit Depth Scaling (64-bit float -> 16-bit signed Int PCM)
-            pcm16_data = (wet_data * 32767.0).astype(np.int16)
-
-            # Write the completed 16-bit mono file directly to disk
-            sf.write(str(output_wav_path), pcm16_data, self.target_sr, subtype="PCM_16")
+            sf.write(
+                file=output_wav_path,
+                data=pcm16_data,
+                samplerate=self.target_sr,
+                subtype="PCM_16",
+            )
 
         except Exception as error:
-            raise RuntimeError(
+            raise ProcessorError(
                 f"DSP Pipeline Failure: Convolution aborted. Details: {error}"
             ) from error
+
+    def _to_mono(self, audio_data: np.ndarray) -> np.ndarray:
+        """Downmixes multi-channel audio arrays to mono via mean averaging."""
+        if audio_data.ndim > 1:
+            return np.mean(audio_data, axis=1)
+        return audio_data
+
+    def _resample(
+        self, audio_data: np.ndarray, current_sr: int, target_sr: int
+    ) -> np.ndarray:
+        """Resamples audio data between two custom sample rates using polyphase filtering."""
+        if current_sr == target_sr:
+            return audio_data
+
+        gcd: int = np.gcd(target_sr, current_sr)
+        up_factor: int = target_sr // gcd
+        down_factor: int = current_sr // gcd
+
+        return resample_poly(audio_data, up_factor, down_factor)
+
+    def _normalize_rir_peak(self, rir_data: np.ndarray) -> np.ndarray:
+        """Normalizes the Room Impulse Response peak amplitude to exactly 1.0."""
+        rir_peak: float = float(np.max(np.abs(rir_data)))
+        if rir_peak > 0.0:
+            return rir_data / rir_peak
+        return rir_data

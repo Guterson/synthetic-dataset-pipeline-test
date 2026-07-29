@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: score2dataset
+Version: 0.1.0
+Summary: Bulk performance variation audio dataset generator for onset detection models.
+Author-email: Lab User <labuser@college.edu>
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Topic :: Multimedia :: Sound/Audio :: Conversion
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: mido>=1.2.10
+Requires-Dist: soundfile>=0.12.1
+Requires-Dist: numpy>=1.22.0
+Requires-Dist: scipy>=1.8.0
