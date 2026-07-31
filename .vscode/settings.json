@@ -1,5 +1,7 @@
 {
     "cSpell.words": [
+        "ambisonic",
+        "ampeg",
         "datamodels",
         "DATASETENTRY",
         "downmix",
@@ -7,12 +9,14 @@
         "Downmixes",
         "fftconvolve",
         "getloadavg",
+        "maxtasksperchild",
         "mido",
         "musicxml",
         "NOTEEVENT",
         "partwise",
         "PERFORMANCESCORE",
         "polyphase",
+        "Retuned",
         "samplerate",
         "Sfizz",
         "TPQN"

@@ -92,12 +92,11 @@ class TestSfizzRenderEngine(unittest.TestCase):
             str(midi_path.resolve()),
             "--wav",
             str(output_wav.resolve()),
-            "--mono",
-            "--samplerate",
-            "48000",
             "--blocksize",
             "256",
-            "--voices",
+            "--samplerate",
+            "48000",
+            "--polyphony",
             "32",
         ]
         self.assertEqual(called_args, expected_matrix)

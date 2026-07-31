@@ -1,5 +1,5 @@
 # --- Audio Synthesis Data & Temp Caches ---
-data/output_test/
+data/outputs/
 data/inputs/
 data/assets/
 *.wav

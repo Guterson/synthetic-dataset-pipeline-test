@@ -72,3 +72,43 @@ class DatasetEntry:
     id: str = ""
     """A unique identifying hash or string tracking this specific 
     performance variation within the broader generated dataset pool."""
+
+
+@dataclass
+class WedgeEvent:
+    """Tracks the continuous boundaries of a dynamic hairpin volume slope (Crescendo/Decrescendo)."""
+
+    wedge_type: str  # "crescendo" or "decrescendo"
+    onset_tick: int
+    offset_tick: int = -1
+
+
+@dataclass
+class ScoreExpressionMap:
+    """Carries structural metadata, textual notation markers, and spanners from a score.
+
+    Acts as the comprehensive metadata exchange layer bridging the gap between
+    raw sheet extraction and independent humanizing processors.
+    """
+
+    initial_tempo_marking: str = "Andante"
+    beats_per_bar: int = 4
+    ticks_per_beat: int = 480  # Forced 480 TPQN baseline
+    total_ticks: int = 0
+
+    """Broad interpretive changes over time
+    e.g., {2400: "ritardando", 9600: "tempo_primo"}
+    """
+    text_directions: dict[int, str] = field(default_factory=dict)
+
+    """Continuous dynamic volume shapes (Hairpins) """
+    dynamic_wedges: list[WedgeEvent] = field(default_factory=list)
+
+    # 3. Individual note articulation overlays
+    # Maps absolute tick locations to specific structural modifiers
+    # e.g., {1440: {"staccato", "accent"}, 2880: {"tenuto"}}
+    local_articulations: dict[int, set[str]] = field(default_factory=dict)
+
+    # 4. Phrasing boundaries for physical legato connection tracking
+    # List of tuple brackets tracking slur zones: e.g., [(start_tick, end_tick)]
+    slur_phrases: list[tuple[int, int]] = field(default_factory=list)

@@ -6,6 +6,7 @@ and maps them into standardized, in-memory PerformanceScore data containers.
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Final
 
 from score2dataset.datamodels import NoteEvent, PerformanceScore
 from score2dataset.parsers.score_parser import ScoreParser
@@ -18,6 +19,29 @@ class MusicXMLParser(ScoreParser):
     into a uniform, integer-based timeline mapped to an abstract tick resolution.
     """
 
+    # Centralized vocabulary shared between validation and calculation
+    _STEP_MAP: Final[dict[str, int]] = {
+        "C": 0,
+        "D": 2,
+        "E": 4,
+        "F": 5,
+        "G": 7,
+        "A": 9,
+        "B": 11,
+    }
+
+    # High-visibility musical dynamics translation table
+    _DYNAMICS_VELOCITY_MAP: Final[dict[str, int]] = {
+        "ppp": 16,
+        "pp": 33,
+        "p": 49,
+        "mp": 64,
+        "mf": 80,
+        "f": 96,
+        "ff": 112,
+        "fff": 126,
+    }
+
     def __init__(self, target_tpqn: int = 480) -> None:
         """Initializes the parser configurations and immutable musical maps.
 
@@ -26,17 +50,6 @@ class MusicXMLParser(ScoreParser):
                 output dataset timeline. Defaults to 480.
         """
         self.target_tpqn: int = target_tpqn
-
-        # Centralized pitch vocabulary shared between validation and calculation
-        self._step_map: dict[str, int] = {
-            "C": 0,
-            "D": 2,
-            "E": 4,
-            "F": 5,
-            "G": 7,
-            "A": 9,
-            "B": 11,
-        }
 
     def parse_score(self, file_path: Path) -> PerformanceScore:
         """Parses an external MusicXML score file into a standard PerformanceScore.
@@ -80,110 +93,106 @@ class MusicXMLParser(ScoreParser):
             )
 
         tick_scale_factor: float = self.target_tpqn / xml_divisions
-        current_xml_time_accumulator = 0
 
-        for element in root.findall(path=".//measure/*"):
+        # Track dynamic scaling per direction event (Default to standard mf velocity)
+        current_velocity = 80
 
-            if element.tag == "forward":
-                skip_duration = element.find(path="duration")
-                if skip_duration is not None:
-                    current_xml_time_accumulator += int(str(skip_duration.text))
+        # Enforce strict part-level containment separation to avoid accumulator contamination
+        for part in root.findall(path=".//part"):
+            current_xml_time_accumulator = 0
 
-            elif element.tag == "backup":
-                skip_duration = element.find(path="duration")
-                if skip_duration is not None:
-                    current_xml_time_accumulator -= int(str(skip_duration.text))
+            for measure in part.findall(path=".//measure"):
+                for element in measure:
 
-            elif element.tag == "note":
-                is_rest = element.find(path="rest") is not None
-                if is_rest:
-                    rest_duration_elem = element.find(path="duration")
-                    if rest_duration_elem is not None:
-                        current_xml_time_accumulator += int(
-                            str(rest_duration_elem.text)
-                        )
-                    continue
-
-                pitch_elem = element.find(".//step")
-                octave_elem = element.find(".//octave")
-                duration_elem = element.find("duration")
-
-                if (
-                    pitch_elem is not None
-                    and octave_elem is not None
-                    and duration_elem is not None
-                ):
-                    # Guard against empty fields returning NoneType attributes
-                    if (
-                        pitch_elem.text is None
-                        or octave_elem.text is None
-                        or duration_elem.text is None
-                    ):
-                        raise ValueError(
-                            f"Malformed MusicXML data: Empty notation nodes found "
-                            f"in score file '{file_path}'."
-                        )
-
-                    raw_octave: str = octave_elem.text.strip()
-                    raw_duration: str = duration_elem.text.strip()
-
-                    # Explicitly verify the text strings are structural numbers
-                    if (
-                        not raw_octave.replace("-", "").isdigit()
-                        or not raw_duration.isdigit()
-                    ):
-                        raise ValueError(
-                            f"Malformed MusicXML data: Invalid Octave '{raw_octave}' or "
-                            f"Duration '{raw_duration}' layout found in score file '{file_path}'."
-                        )
-
-                    octave = int(raw_octave)
-                    raw_xml_duration = int(raw_duration)
-
-                    pitch_step = pitch_elem.text.upper().strip()
-                    if pitch_step not in self._step_map:
-                        raise ValueError(
-                            f"Malformed MusicXML asset: Invalid pitch step '{pitch_step}' "
-                            f"encountered in score file '{file_path}'."
-                        )
-
-                    alter_elem = element.find(path=".//alter")
-
-                    # Apply the same text safety check to the optional alter property
-                    if alter_elem is not None and alter_elem.text is not None:
-                        raw_alter: str = alter_elem.text.strip()
-                        if not raw_alter.replace("-", "").isdigit():
-                            raise ValueError(
-                                f"Malformed MusicXML data: Invalid Alteration value '{raw_alter}' "
-                                f"found in score file '{file_path}'."
+                    # Extract structural volume changes from layout expressions safely
+                    if element.tag == "direction":
+                        dyn_elem = element.find(path=".//dynamics/*")
+                        if dyn_elem is not None:
+                            # Map standard notation markers (p, mf, f) to standard MIDI velocity numbers
+                            tag_name = dyn_elem.tag.lower()
+                            current_velocity = self._DYNAMICS_VELOCITY_MAP.get(
+                                tag_name, 80
                             )
-                        alteration = int(raw_alter)
-                    else:
-                        alteration = 0
 
-                    # Private math helper reads the validated step string safely
-                    midi_pitch: int = self._calculate_midi_pitch(
-                        step=pitch_step, octave=octave, alter=alteration
-                    )
+                    elif element.tag == "forward":
+                        skip_duration = element.find(path="duration")
+                        if skip_duration is not None and skip_duration.text is not None:
+                            current_xml_time_accumulator += int(skip_duration.text)
 
-                    baked_onset_ticks: int = round(
-                        number=current_xml_time_accumulator * tick_scale_factor
-                    )
-                    baked_duration_ticks: int = round(
-                        number=raw_xml_duration * tick_scale_factor
-                    )
+                    elif element.tag == "backup":
+                        skip_duration = element.find(path="duration")
+                        if skip_duration is not None and skip_duration.text is not None:
+                            current_xml_time_accumulator -= int(skip_duration.text)
 
-                    note_event = NoteEvent(
-                        pitch=midi_pitch,
-                        onset_ticks=baked_onset_ticks,
-                        duration_ticks=baked_duration_ticks,
-                        velocity=64,
-                    )
-                    score.events.append(note_event)
+                    elif element.tag == "note":
+                        is_rest = element.find(path="rest") is not None
+                        duration_elem = element.find(path="duration")
+                        raw_xml_duration = (
+                            int(duration_elem.text.strip())
+                            if (
+                                duration_elem is not None
+                                and duration_elem.text is not None
+                            )
+                            else 0
+                        )
 
-                    is_chord: bool = element.find(path="chord") is not None
-                    if not is_chord:
-                        current_xml_time_accumulator += raw_xml_duration
+                        if is_rest:
+                            current_xml_time_accumulator += raw_xml_duration
+                            continue
+
+                        pitch_elem = element.find(path=".//step")
+                        octave_elem = element.find(path=".//octave")
+                        is_chord = element.find(path="chord") is not None
+
+                        if (
+                            pitch_elem is not None
+                            and octave_elem is not None
+                            and pitch_elem.text is not None
+                            and octave_elem.text is not None
+                        ):
+                            octave = int(octave_elem.text.strip())
+                            pitch_step = pitch_elem.text.upper().strip()
+
+                            alter_elem = element.find(path=".//alter")
+                            alteration = (
+                                int(alter_elem.text.strip())
+                                if (
+                                    alter_elem is not None
+                                    and alter_elem.text is not None
+                                )
+                                else 0
+                            )
+
+                            midi_pitch = self._calculate_midi_pitch(
+                                step=pitch_step, octave=octave, alter=alteration
+                            )
+
+                            # If it's a chord note, calculate its onset relative to where the chord block *started*
+                            target_onset_time = (
+                                current_xml_time_accumulator - raw_xml_duration
+                                if is_chord
+                                else current_xml_time_accumulator
+                            )
+
+                            baked_onset_ticks = round(
+                                target_onset_time * tick_scale_factor
+                            )
+                            baked_duration_ticks = round(
+                                raw_xml_duration * tick_scale_factor
+                            )
+
+                            # Assign the dynamically extracted notation volume value
+                            note_event = NoteEvent(
+                                pitch=midi_pitch,
+                                onset_ticks=baked_onset_ticks,
+                                duration_ticks=baked_duration_ticks,
+                                velocity=current_velocity,
+                            )
+                            score.events.append(note_event)
+
+                        # Update the timeline only if the parsed note object is a standalone step
+                        if not is_chord:
+                            current_xml_time_accumulator += raw_xml_duration
 
         return score
 
@@ -199,5 +208,5 @@ class MusicXMLParser(ScoreParser):
             An absolute integer mapping representing standard MIDI key values.
         """
         # Dictionary lookups are now safe from KeyErrors due to prior validation checks
-        base_note: int = self._step_map[step]
+        base_note: int = self._STEP_MAP[step]
         return int((octave + 1) * 12 + base_note + alter)

@@ -1,0 +1,81 @@
+
+Format(s): 
+
+Folder: IR_Streched_ScaleModel
+Mono Files
+
+    IRstreched_S1R1.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 500 ms
+File Size: 144 KB
+File Format: wav
+
+    IRstreched_S1R2.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 500 ms
+File Size: 144 KB
+File Format: wav
+
+    IRstreched_S2R1.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 500 ms
+File Size: 144 KB
+File Format: wav
+
+    IRstreched_S2R2.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 500 ms
+File Size: 144 KB
+File Format: wav
+
+Folder: IR_ScaleModel
+Mono
+
+    S1R1_ScaleModel.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 400 ms
+File Size: 116 KB
+File Format: wav
+
+    S1R2_ScaleModel.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 400 ms
+File Size: 116 KB
+File Format: wav
+
+    S2R1_ScaleModel.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 400 ms
+File Size: 116 KB
+File Format: wav
+
+    S2R2_ScaleModel.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 24
+Duration: 400 ms
+File Size: 116 KB
+File Format: wav
+

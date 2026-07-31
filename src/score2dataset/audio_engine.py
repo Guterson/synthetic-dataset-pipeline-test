@@ -106,7 +106,7 @@ class SfizzRenderEngine(AudioEngine):
         self,
         midi_path: Path,
         output_wav_path: Path,
-        sample_rate: int = 44100,
+        sample_rate: int = 48000,
         block_size: int = 512,
         polyphony: int = 64,
     ) -> None:
@@ -119,12 +119,11 @@ class SfizzRenderEngine(AudioEngine):
             str(object=midi_path.resolve()),
             "--wav",
             str(object=output_wav_path.resolve()),
-            "--mono",
-            "--samplerate",
-            str(object=sample_rate),
             "--blocksize",
             str(object=block_size),
-            "--voices",
+            "--samplerate",
+            str(object=sample_rate),
+            "--polyphony",
             str(object=polyphony),
         ]
 

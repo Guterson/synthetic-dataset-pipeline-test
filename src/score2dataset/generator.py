@@ -1,7 +1,7 @@
-"""Core orchestration engine for synthetic audio dataset generation.
+"""Core orchestration engine for memory-constrained dataset generation.
 
-This module provides concurrent, non-cartesian multiprocessing factory loops
-to manage performance variations across workstation processor clusters safely.
+Provides a stateless, stream-oriented parallel rendering framework designed
+to eliminate memory and network file system swap accumulation on restricted nodes.
 """
 
 import copy
@@ -19,56 +19,77 @@ from score2dataset.exporters.midi_exporter import MidiExporter
 from score2dataset.processors.rir_convolve import RirConvolver
 
 
-def _parallel_worker_thunk(
-    score_data: PerformanceScore,
-    engine_config: dict[str, Any],
-    rir_path: Path,
-    output_dir: Path,
-    filename: str,
-) -> Path:
-    """Isolated multiprocessing anchor executing single rendering tasks.
+def _isolated_render_thunk(
+    task_args: tuple[PerformanceScore, dict[str, Any], Path, Path, str],
+) -> str:
+    """Executes a single audio rendering and convolution task inside an isolated memory node.
 
-    Runs inside an independent OS process memory node to insulate parent state.
+    This function operates as a stateless anchor. It allocates all intermediate
+    DSP arrays within an ephemeral local directory and forces absolute cleanup
+    before yielding control back to the operating system.
+
+    Args:
+        task_args: A packed tuple containing the score object, synthesizer configurations,
+            target RIR file path, target output directory, and the destination filename.
+
+    Returns:
+        A string representation of the successfully written file path destination.
     """
+    score, engine_config, rir_path, output_dir, filename = task_args
+
     midi_exporter = MidiExporter()
     convolver = RirConvolver()
     engine = SfizzRenderEngine(**engine_config)
 
-    with tempfile.TemporaryDirectory() as local_cache_dir:
-        ssd_path: Path = Path(local_cache_dir)
-        temp_midi: Path = ssd_path / "normalized.mid"
-        temp_wav: Path = ssd_path / "dry_render.wav"
-        temp_wet_wav: Path = ssd_path / "wet_render.wav"
+    final_destination: Path = output_dir / f"{filename}.wav"
 
-        midi_exporter.export_score(score_data, temp_midi)
-        engine.render_audio(midi_path=temp_midi, output_wav_path=temp_wav)
+    # Use a localized context manager to ensure unmanaged libsndfile handles close cleanly
+    try:
+        with tempfile.TemporaryDirectory(dir="/tmp") as local_cache:
+            cache_path: Path = Path(local_cache)
+            temp_midi: Path = cache_path / "scratch.mid"
+            temp_dry_wav: Path = cache_path / "scratch_dry.wav"
+            temp_wet_wav: Path = cache_path / "scratch_wet.wav"
 
-        convolver.process_audio(
-            dry_wav_path=temp_wav, rir_path=rir_path, output_wav_path=temp_wet_wav
-        )
+            # Execute the linear processing pipe entirely within local memory space
+            midi_exporter.export_score(score, temp_midi)
+            engine.render_audio(midi_path=temp_midi, output_wav_path=temp_dry_wav)
 
-        final_destination: Path = output_dir / f"{filename}.wav"
-        shutil.copy(temp_wet_wav, final_destination)
-        return final_destination
+            convolver.process_audio(
+                dry_wav_path=temp_dry_wav,
+                rir_path=rir_path,
+                output_wav_path=temp_wet_wav,
+            )
+
+            # Move the final product directly to the target directory
+            shutil.copy(temp_wet_wav, final_destination)
+
+    finally:
+        # Force destruction of local references to guarantee instantaneous unlinking
+        del midi_exporter
+        del convolver
+        del engine
+
+    return str(final_destination)
 
 
 class DatasetGenerator:
-    """Manages secure parallel execution routines across local hardware pools."""
+    """Orchestrates high-throughput parallel dataset synthesis beneath volatile memory caps."""
 
     def __init__(
         self, engine_configs: list[dict[str, Any]], rir_paths: list[str]
     ) -> None:
-        """Initializes the batch engine with balancing asset pools.
+        """Initializes the batch engine balance maps with structured validation parameters.
 
         Args:
-            engine_configs: List of configuration maps to spawn AudioEngine instances.
-            rir_paths: A list of public string paths pointing to RIR assets (.wav).
+            engine_configs: A list of configuration dicts used to instantiate audio layers.
+            rir_paths: A list of file path strings pointing to verified RIR audio files.
 
         Raises:
-            ProcessorError: If either the engine configuration pool or RIR pool is empty.
+            ProcessorError: If any input configuration pool is empty.
         """
         if not engine_configs or not rir_paths:
-            raise ProcessorError("Asset distribution pools cannot be empty.")
+            raise ProcessorError("Asset initialization vectors cannot be empty arrays.")
 
         self.engine_configs: list[dict[str, Any]] = engine_configs
         self.rir_pool: list[Path] = [Path(p).resolve() for p in rir_paths]
@@ -79,42 +100,45 @@ class DatasetGenerator:
         output_dir: str,
         variation_count: int = 1,
     ) -> list[Path]:
-        """Executes a non-cartesian parallel processing sweep using CPU safety caps.
+        """Distributes performance tasks across a streaming multiprocessing queue.
 
-        Distributes variation layers across processes while balancing task assignments
-        evenly across the available synthesizer and reverb pools.
+        Utilizes an un-ordered stream generator with process-level recycling to keep
+        the network file system virtual memory allocation flat over long execution runs.
 
         Args:
-            base_scores: A list of pre-parsed base PerformanceScore memory objects.
-            output_dir: Target destination path string where dataset files are saved.
-            variation_count: Total unique performance adjustments to generate per score.
+            base_scores: A list containing the singular base performance score container.
+            output_dir: String location specifying where output WAV variations are written.
+            variation_count: The total number of unique environment mutations to calculate.
 
         Returns:
-            A list of Path destinations tracking every successfully generated file.
+            A list of Path locations tracking every successfully generated variant.
         """
         resolved_out_dir: Path = Path(output_dir).resolve()
         resolved_out_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_worker_limit: int = self._calculate_safe_worker_limit()
-        processing_tasks: list[
-            tuple[PerformanceScore, dict[str, Any], Path, Path, str]
-        ] = []
-        task_counter: int = 0
+        worker_concurrency: int = self._calculate_conservative_worker_limit()
+        task_payload: list[tuple[PerformanceScore, dict[str, Any], Path, Path, str]] = (
+            []
+        )
+        matrix_index: int = 0
 
         for score in base_scores:
             base_name: str = score.source.stem
 
             for v_idx in range(variation_count):
                 instance_filename: str = f"{base_name}_var_{v_idx}"
+
+                # Create a complete data break from the main loop thread state
                 mutated_score: PerformanceScore = copy.deepcopy(score)
 
+                # Balanced extraction from asset parameters pools
                 selected_config: dict[str, Any] = self.engine_configs[
-                    task_counter % len(self.engine_configs)
+                    matrix_index % len(self.engine_configs)
                 ]
-                selected_rir: Path = self.rir_pool[task_counter % len(self.rir_pool)]
-                task_counter += 1
+                selected_rir: Path = self.rir_pool[matrix_index % len(self.rir_pool)]
+                matrix_index += 1
 
-                processing_tasks.append(
+                task_payload.append(
                     (
                         mutated_score,
                         selected_config,
@@ -124,27 +148,45 @@ class DatasetGenerator:
                     )
                 )
 
-        completed_records: list[Path] = []
-        with multiprocessing.Pool(processes=safe_worker_limit) as pool:
-            results: list[Path] = pool.starmap(_parallel_worker_thunk, processing_tasks)
-            completed_records.extend(results)
+        print(
+            f"\n🚀 Launching Parallel Stream Engine [{worker_concurrency} Cores Active]"
+        )
+        print(f"📦 Total target matrix payload allocation: {len(task_payload)} files")
 
+        completed_records: list[Path] = []
+
+        # Enforce strict single-task process recycling via a controlled spawn pool
+        pool_context = multiprocessing.get_context("spawn")
+        with pool_context.Pool(
+            processes=worker_concurrency, maxtasksperchild=1
+        ) as stream_pool:
+
+            # imap_unordered pulls tasks individually, preventing long array queues in memory
+            task_stream = stream_pool.imap_unordered(
+                _isolated_render_thunk, task_payload
+            )
+
+            for idx, result_path_str in enumerate(task_stream, start=1):
+                completed_records.append(Path(result_path_str))
+
+                print(
+                    f"  ✅ [{idx}/{len(task_payload)}] Generated asset variance: {Path(result_path_str).name}"
+                )
+
+                # Clear python cache layers at the end of each stream loop iteration
+                import gc
+
+                gc.collect()
+
+        print(
+            f"\n🎉 Generation successful. {len(completed_records)} variations secured cleanly.\n"
+        )
         return completed_records
 
-    def _calculate_safe_worker_limit(self) -> int:
-        """Computes hardware allocation limits based on live system load thresholds."""
-        available_cores: int = os.cpu_count() or 1
+    def _calculate_conservative_worker_limit(self) -> int:
+        """Calculates strict hardware safety limits based on active host capacities."""
+        hardware_cores: int = os.cpu_count() or 1
 
-        try:
-            # os.getloadavg() returns (1-min, 5-min, 15-min) system load metrics
-            one_min_load: float = os.getloadavg()[0]
-
-            # If the current 1-minute load exceeds 70% of a single core's capacity
-            if one_min_load > (available_cores * 0.7):
-                # Scale down aggressively to avoid choking an already stressed machine
-                return max(1, int(available_cores * 0.3))
-        except (AttributeError, OSError):
-            # Fallback guard for environments where load averages cannot be requested
-            pass
-
-        return max(1, int(available_cores * 0.7))
+        # On a highly volatile lab workstation, never consume more than half of the cores
+        # to ensure the host process can maintain network sync stability.
+        return max(1, int(hardware_cores * 0.5))

@@ -5,6 +5,8 @@ generation pipeline to respond distinctively to configuration, parsing,
 and runtime execution faults.
 """
 
+from typing import Any, Callable
+
 
 class Score2DatasetError(Exception):
     """Base exception class for all errors raised by this package."""
@@ -22,6 +24,13 @@ class AudioEngineError(Score2DatasetError):
         super().__init__(message)
         self.returncode: int = returncode
         self.details: str = details
+
+    def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
+        """Customizes pickling behavior to preserve attributes across process boundaries."""
+        return (
+            self.__class__,
+            (self.args[0], self.returncode, self.details),
+        )
 
 
 class ExporterError(Score2DatasetError):
