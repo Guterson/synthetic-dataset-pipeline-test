@@ -75,16 +75,16 @@ class ArticulationModifier:
         modified_events: list[NoteEvent] = []
 
         for event in original_events:
-            # 1. Determine the intentional stylistic factor (alpha)
+            # Determine the intentional stylistic factor (alpha)
             alpha: float = self._calculate_intentional_alpha(
-                event.onset_ticks, expression_map
+                onset_tick=event.onset_ticks, expression_map=expression_map
             )
 
-            # 2. Sample the unintentional biomechanical motor residual error (zeta)
+            # Sample the unintentional biomechanical motor residual error (zeta)
             # Equation: zeta ~ N(0, sigma_d^2)
             zeta: float = float(self.rng.normal(0.0, self.sigma_d))
 
-            # 3. Calculate and clamp the final realized performance length
+            # Calculate and clamp the final realized performance length
             # Equation: d' = max(d_min, round(d * alpha + zeta))
             calculated_duration = int(np.round(event.duration_ticks * alpha + zeta))
             final_duration: int = max(self.d_min, calculated_duration)

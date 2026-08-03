@@ -42,7 +42,7 @@ def run_diagnostics() -> int:
         parser = MusicXMLParser(target_tpqn=480)
         in_memory_score = parser.parse_score(xml_input)
         print(
-            f" -> Parse Successful. Extracted {len(in_memory_score.events)} NoteEvents."
+            f" -> Parse Successful. Extracted {len(in_memory_score[0].events)} NoteEvents."
         )
 
         # 1. Discover all pre-conditioned, zero-latency instrument maps dynamically
@@ -76,9 +76,9 @@ def run_diagnostics() -> int:
         # variation_count=5 means the generator will create 5 distinct environmental variations
         # combining different discovered SFZ setups and RIR acoustical profiles.
         saved_paths: list[Path] = generator.generate_batch(
-            base_scores=[in_memory_score],
+            score_tuples=[in_memory_score],
             output_dir=str(output_dir),
-            variation_count=100,
+            variation_count=10,
         )
 
         print("\n=== BATCH RENDER COMPLETE ===")

@@ -9,28 +9,12 @@ from typing import Final
 import numpy as np
 from scipy.interpolate import CubicSpline
 
+from score2dataset.config import MAX_BPM, MIN_BPM, NOMINAL_TEMPOS
 from score2dataset.datamodels import NoteEvent, PerformanceScore, ScoreExpressionMap
 
 
 class TempoContourGenerator:
     """Derives smooth, C2-continuous tempo maps satisfying physical boundary constraints."""
-
-    # High-visibility translation table derived exactly from Table 1 of the paper
-    _STYLE_MAPPINGS: Final[dict[str, tuple[float, float]]] = {
-        "grave": (25.0, 45.0),
-        "largo": (40.0, 60.0),
-        "lento": (45.0, 60.0),
-        "adagio": (66.0, 76.0),
-        "andante": (76.0, 108.0),
-        "moderato": (108.0, 120.0),
-        "allegro": (120.0, 168.0),
-        "presto": (168.0, 200.0),
-        "prestissimo": (200.0, 250.0),
-    }
-
-    # Strict physical safety limits derived from human motor noise and grid quantization thresholds
-    _B_MIN: Final[float] = 12.5
-    _B_MAX: Final[float] = 250.0
 
     def __init__(self, theta_sigma: float = 0.15, seed: int | None = None) -> None:
         """Initializes the contour generator with randomization bounds and state handles.
@@ -53,9 +37,9 @@ class TempoContourGenerator:
         """
         ticks_per_bar: int = metadata.beats_per_bar * metadata.ticks_per_beat
 
-        # 1. Resolve primary/initial tempo anchor speed
+        # Resolve primary/initial tempo anchor speed
         base_style = metadata.initial_tempo_marking.lower().strip()
-        low_b, high_b = self._STYLE_MAPPINGS.get(base_style, (76.0, 108.0))
+        low_b, high_b = NOMINAL_TEMPOS.get(base_style, (76.0, 108.0))
         primary_base_bpm: float = float(self.rng.uniform(low_b, high_b))
 
         # Skeletal points tracking: keys = absolute ticks, values = target BPM
@@ -68,8 +52,8 @@ class TempoContourGenerator:
         for tick, marking in sorted_directions:
             norm_marking = marking.lower().strip()
 
-            if norm_marking in self._STYLE_MAPPINGS:
-                low_b, high_b = self._STYLE_MAPPINGS[norm_marking]
+            if norm_marking in NOMINAL_TEMPOS:
+                low_b, high_b = NOMINAL_TEMPOS[norm_marking]
                 current_running_bpm = float(self.rng.uniform(low_b, high_b))
                 anchors[tick] = current_running_bpm
 
@@ -100,7 +84,7 @@ class TempoContourGenerator:
                 current_running_bpm = primary_base_bpm
                 anchors[tick] = current_running_bpm
 
-        # 2. Structural Fallback: Generate bar-line anchors to avoid mechanical tracking rigidity
+        # Structural Fallback: Generate bar-line anchors to avoid mechanical tracking rigidity
         for tick in range(0, metadata.total_ticks, ticks_per_bar):
             if tick not in anchors:
                 # Equation: B_anchor ~ U(B_score * [1 - theta], B_score * [1 + theta])
@@ -113,13 +97,13 @@ class TempoContourGenerator:
         if metadata.total_ticks not in anchors:
             anchors[metadata.total_ticks] = current_running_bpm
 
-        # 3. Compile vectors and build the continuous C2-continuous Cubic Spline
+        # Compile vectors and build the continuous C2-continuous Cubic Spline
         sorted_anchors = sorted(anchors.items())
         knots_x = np.array([item[0] for item in sorted_anchors], dtype=np.float64)
         values_y = np.array([item[1] for item in sorted_anchors], dtype=np.float64)
 
         # Enforce physical saturation ceilings immediately over knot parameters
-        values_y = np.clip(values_y, self._B_MIN, self._B_MAX)
+        values_y = np.clip(values_y, MIN_BPM, MAX_BPM)
 
         # Natural boundary configuration forces second derivatives to zero, preventing wild oscillations
         return CubicSpline(knots_x, values_y, bc_type="natural")
@@ -142,7 +126,7 @@ class TempoContourGenerator:
         for event in score.events:
             # Evaluate the instantaneous cubic polynomial at the specific note onset tick coordinate
             instantaneous_bpm: float = float(tempo_spline(event.onset_ticks))
-            instantaneous_bpm = max(self._B_MIN, min(self._B_MAX, instantaneous_bpm))
+            instantaneous_bpm = max(MIN_BPM, min(MAX_BPM, instantaneous_bpm))
 
             # Calculate a microtiming scaling scalar to adjust performance properties
             # Higher instantaneous BPM means a faster clock speed, shortening relative durations

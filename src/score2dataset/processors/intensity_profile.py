@@ -9,23 +9,17 @@ from typing import Final
 
 import numpy as np
 
+from score2dataset.config import (
+    DEFAULT_VELOCITY,
+    MAX_MIDI_VELOCITY,
+    MIN_MIDI_VELOCITY,
+    NOMINAL_VELOCITIES,
+)
 from score2dataset.datamodels import NoteEvent, PerformanceScore, ScoreExpressionMap
 
 
 class IntensityProfileModifier:
     """Modulates note velocities using dynamic curves, metric weight, and motor noise."""
-
-    # High-visibility translation table mapped precisely to your 7-bit MIDI target range
-    _NOMINAL_VELOCITIES: Final[dict[str, int]] = {
-        "ppp": 16,
-        "pp": 33,
-        "p": 49,
-        "mp": 64,
-        "mf": 80,
-        "f": 96,
-        "ff": 112,
-        "fff": 126,
-    }
 
     def __init__(
         self,
@@ -73,11 +67,11 @@ class IntensityProfileModifier:
             expression_map.beats_per_bar * expression_map.ticks_per_beat
         )
 
-        # Step 1: Establish absolute dynamic baseline anchors across the score timeline
+        # Establish absolute dynamic baseline anchors across the score timeline
         anchors: list[tuple[int, float]] = []
         current_baseline_v: float = float(
-            self._NOMINAL_VELOCITIES.get(
-                expression_map.initial_tempo_marking.lower().strip(), 80
+            NOMINAL_VELOCITIES.get(
+                expression_map.initial_tempo_marking.lower().strip(), DEFAULT_VELOCITY
             )
         )
 
@@ -91,9 +85,9 @@ class IntensityProfileModifier:
 
         # Track explicit textual dynamic marks (p, mf, ff)
         for tick, marking in sorted(expression_map.text_directions.items()):
-            norm_mark = marking.lower().strip()
-            if norm_mark in self._NOMINAL_VELOCITIES:
-                v_nom = self._NOMINAL_VELOCITIES[norm_mark]
+            norm_mark: str = marking.lower().strip()
+            if norm_mark in NOMINAL_VELOCITIES:
+                v_nom: int = NOMINAL_VELOCITIES[norm_mark]
                 current_baseline_v = float(
                     self.rng.uniform(v_nom - self.delta_v, v_nom + self.delta_v)
                 )
@@ -101,11 +95,11 @@ class IntensityProfileModifier:
 
         # Track continuous hairpins (Crescendo/Decrescendo wedges)
         for wedge in expression_map.dynamic_wedges:
-            v_start = current_baseline_v
+            v_start: float = current_baseline_v
             gamma_v = float(self.rng.uniform(self.gamma_min, self.gamma_max))
 
             if wedge.wedge_type == "crescendo":
-                v_end = v_start * gamma_v
+                v_end: float = v_start * gamma_v
             else:  # decrescendo / diminuendo
                 v_end = v_start * (1.0 / gamma_v)
 
@@ -122,20 +116,22 @@ class IntensityProfileModifier:
 
         modified_events: list[NoteEvent] = []
 
-        # Step 2: Loop chronologically to project baseline, accents, and residuals
+        # Loop chronologically to project baseline, accents, and residuals
         for event in original_events:
             # Evaluate piecewise linear interpolation for the exact note onset tick
-            v_interp = self._interpolate_velocity(event.onset_ticks, anchors)
+            v_interp: float = self._interpolate_velocity(event.onset_ticks, anchors)
 
             # Calculate the metric downbeat indicator
             is_downbeat: bool = (event.onset_ticks % ticks_per_bar) == 0
 
-            # Dynamic Headroom Scale: Mitigates velocity compression as values near 127
-            headroom_scale: float = max(0.0, (127.0 - v_interp) / 127.0)
+            # Dynamic Headroom Scale: Mitigates velocity compression as values near MAX_MIDI_VELOCITY
+            headroom_scale: float = max(
+                0.0, (MAX_MIDI_VELOCITY - v_interp) / MAX_MIDI_VELOCITY
+            )
 
             # Multiplicative metric accent adjusted smoothly by local headroom space
             if is_downbeat:
-                v_metric = 1.0 + (self.beta * headroom_scale)
+                v_metric: float = 1.0 + (self.beta * headroom_scale)
             else:
                 v_metric = 1.0
 
@@ -144,9 +140,11 @@ class IntensityProfileModifier:
             xi: float = float(self.rng.normal(0.0, self.sigma_v))
 
             # Step 3: Compute, round, and safely clamp the final 7-bit MIDI velocity
-            # Equation: v_final = clip(round(V_interp * V_metric + xi), 1, 127)
+            # Equation: v_final = clip(round(V_interp * V_metric + xi), MIN_MIDI_VELOCITY, MAX_MIDI_VELOCITY)
             calculated_v = int(np.round(v_interp * v_metric + xi))
-            final_velocity: int = max(1, min(127, calculated_v))
+            final_velocity: int = max(
+                MIN_MIDI_VELOCITY, min(MAX_MIDI_VELOCITY, calculated_v)
+            )
 
             modified_event = NoteEvent(
                 pitch=event.pitch,
@@ -171,6 +169,11 @@ class IntensityProfileModifier:
 
         # Locate the exact surrounding anchor bracket bounding this specific note tick
         for i in range(len(anchors) - 1):
+            k_a: int
+            v_a: float
+            k_b: int
+            v_b: float
+
             k_a, v_a = anchors[i]
             k_b, v_b = anchors[i + 1]
             if k_a <= tick <= k_b:

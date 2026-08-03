@@ -19,7 +19,7 @@ class TestAudioEngineContract(unittest.TestCase):
     def test_cannot_instantiate_abstract_base_class(self) -> None:
         """Ensure the blueprint cannot be run directly without subclasses."""
         with self.assertRaises(TypeError):
-            _ = AudioEngine()  # type: ignore[abstract]
+            _ = AudioEngine()  # Type: ignore[abstract]
 
 
 class TestSfizzRenderEngine(unittest.TestCase):

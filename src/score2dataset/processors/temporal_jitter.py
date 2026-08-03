@@ -4,11 +4,13 @@ Implements tempo-proportional variance mapping and first-order autoregressive
 AR(1) error curves to simulate human physical timing drift and execution noise.
 """
 
+import copy
 from typing import Final
 
 import numpy as np
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import CubicSpline  # Type: ignore
 
+from score2dataset.config import STANDARD_TPQN
 from score2dataset.datamodels import NoteEvent, PerformanceScore
 from score2dataset.exceptions import ProcessorError
 
@@ -16,11 +18,14 @@ from score2dataset.exceptions import ProcessorError
 class TemporalJitterModifier:
     """Applies tempo-calibrated AR(1) human motor jitter to note onset grids."""
 
+    # Goebl & Palmer (2002) biomechanical coupling ratio (2.5ms vs 12.5ms)
+    _FINGER_DAMPENING: Final[float] = 0.20
+
     def __init__(
         self,
         sigma_time: float = 0.010,
         phi: float = 0.35,
-        target_tpqn: int = 480,
+        target_tpqn: int = STANDARD_TPQN,
         seed: int | None = None,
     ) -> None:
         """Initializes the microtiming variance parameters and stochastic seed handles.
@@ -60,7 +65,7 @@ class TemporalJitterModifier:
         if not original_events:
             return copy.deepcopy(score)
 
-        # Step 1: Extract and group absolute timelines to identify chord bounds
+        # Extract and group absolute timelines to identify chord bounds
         # Maps unique onset tick targets to all note instances striking on that beat
         chord_groups: dict[int, list[NoteEvent]] = {}
         for event in original_events:
@@ -72,9 +77,9 @@ class TemporalJitterModifier:
         modified_events: list[NoteEvent] = []
         previous_delta: float = 0.0
 
-        # Step 2: Loop chronologically across the unique time moments
+        # Loop chronologically across the unique time moments
         for onset_tick in sorted_onsets:
-            notes_in_chord = chord_groups[onset_tick]
+            notes_in_chord: list[NoteEvent] = chord_groups[onset_tick]
 
             # Evaluate the instantaneous tempo curve to find the exact local BPM
             instantaneous_bpm: float = float(tempo_spline(onset_tick))
@@ -94,22 +99,30 @@ class TemporalJitterModifier:
             # Convert floating-point error offset cleanly into discrete grid units
             tick_displacement = int(np.round(current_delta))
 
-            # Step 3: Apply the identical displacement step uniformly to all notes in the chord
+            # Apply hierarchical displacement: shared AR(1) drift + localized finger jitter
             for event in notes_in_chord:
+                # We scale sigma_ticks by the class constant to damp the asynchronous spread
+                finger_epsilon = float(
+                    self.rng.normal(0.0, sigma_ticks * self._FINGER_DAMPENING)
+                )
+                finger_displacement = int(np.round(finger_epsilon))
+
+                # 2. Add the finger jitter to the shared macro chord displacement
+                total_displacement = tick_displacement + finger_displacement
+
                 perturbed_onset = int(
-                    np.clip(event.onset_ticks + tick_displacement, 0, None)
+                    np.clip(event.onset_ticks + total_displacement, 0, None)
                 )
 
                 modified_event = NoteEvent(
                     pitch=event.pitch,
                     onset_ticks=perturbed_onset,
-                    # Structural release coordinates are preserved as defined in your paper text
                     duration_ticks=event.duration_ticks,
                     velocity=event.velocity,
                 )
                 modified_events.append(modified_event)
 
-        # Step 4: Re-sort the final timeline to protect structural execution linearity
+        # Re-sort the final timeline to protect structural execution linearity
         modified_events.sort(key=lambda e: e.onset_ticks)
 
         perturbed_score = PerformanceScore(source=score.source)

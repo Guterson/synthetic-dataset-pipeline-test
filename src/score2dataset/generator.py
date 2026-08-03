@@ -5,6 +5,7 @@ entirely in memory before executing stateless, local cache audio renders.
 """
 
 import copy
+import gc
 import multiprocessing
 import os
 import shutil
@@ -223,8 +224,6 @@ class DatasetGenerator:
                 print(
                     f"  ✅ [{idx}/{len(task_payload)}] Humanized & Rendered variation: {Path(result_path_str).name}"
                 )
-
-                import gc
 
                 gc.collect()
 

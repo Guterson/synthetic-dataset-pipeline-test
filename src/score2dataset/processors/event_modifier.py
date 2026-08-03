@@ -14,15 +14,15 @@ from score2dataset.exceptions import ProcessorError
 
 
 class EventLevelModifier:
-    """Applies probabilistic human errors and verifies structural integrity bounds."""
+    """Applies probabilistic modifications and verifies structural integrity bounds."""
 
     def __init__(
         self,
-        p_keep: float = 0.94,
-        p_sub: float = 0.04,
-        p_omit: float = 0.02,
+        p_keep: float = 1.0,
+        p_sub: float = 0.0,
+        p_omit: float = 0.0,
         sigma_p: float = 1.2,
-        poisson_lambda: float = 2.5,
+        poisson_lambda: float = 0.0,
         threshold_gamma: float = 0.15,
         w_sub: float = 0.2,
         w_omit: float = 0.5,
@@ -84,8 +84,7 @@ class EventLevelModifier:
         n_sub: int = 0
         n_omit: int = 0
 
-        # Step 1: Categorical execution lottery loops over existing notes
-        # Outome mappings -> 0: Keep, 1: Substitute, 2: Omit
+        # Outcome mappings -> 0: Keep, 1: Substitute, 2: Omit
         outcomes = self.rng.choice(3, size=n_canonical, p=self.probabilities)
 
         for idx, event in enumerate(original_events):
@@ -113,7 +112,7 @@ class EventLevelModifier:
                 n_omit += 1
                 continue
 
-        # Step 2: Poisson random noise arrival for additive ghost strikes
+        # Poisson random noise arrival for additive ghost strikes
         n_ins: int = int(self.rng.poisson(self.poisson_lambda))
 
         if n_ins > 0 and len(modified_events) > 0:
@@ -135,7 +134,7 @@ class EventLevelModifier:
                 )
                 modified_events.append(ghost_event)
 
-        # Step 3: Structural Integrity Threshold Evaluation (Equation check)
+        # Structural Integrity Threshold Evaluation (Equation check)
         cumulative_noise_density: float = (
             (self.w_sub * n_sub) + (self.w_omit * n_omit) + (self.w_ins * n_ins)
         ) / n_canonical
@@ -146,7 +145,7 @@ class EventLevelModifier:
                 f"({cumulative_noise_density:.4f}) exceeded threshold Gamma ({self.gamma})."
             )
 
-        # Step 4: Reassemble and sort the finalized sequence timeline
+        # Reassemble and sort the finalized sequence timeline
         # Sorting guarantees that chord notes and ghost notes stay sequentially linear
         modified_events.sort(key=lambda e: e.onset_ticks)
 

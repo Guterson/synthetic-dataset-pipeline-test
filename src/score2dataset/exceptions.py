@@ -5,7 +5,8 @@ generation pipeline to respond distinctively to configuration, parsing,
 and runtime execution faults.
 """
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 class Score2DatasetError(Exception):
@@ -42,4 +43,4 @@ class ParserError(Score2DatasetError):
 
 
 class ProcessorError(Score2DatasetError):
-    """Raised when an internal audio digital signal processing or convolution step fails."""
+    """Raised when an internal audio digital signal processing step fails."""

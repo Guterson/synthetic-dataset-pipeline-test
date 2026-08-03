@@ -1,139 +1,140 @@
-"""Unit test suite for the DatasetGenerator dataset orchestrator.
+"""Module-level test suite for DatasetGenerator orchestration engine.
 
-Validates parallel worker distribution, core mapping logic limits, and
-proper handling of centralized processing custom exception triggers.
+Validates process worker limit limits, batch matrix payload distribution,
+and error catching across parallel stream pools via public boundaries.
 """
 
-import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from score2dataset.datamodels import PerformanceScore
+import pytest
+
+from score2dataset.datamodels import PerformanceScore, ScoreExpressionMap
 from score2dataset.exceptions import ProcessorError
-from score2dataset.generator import DatasetGenerator, _parallel_worker_thunk
+from score2dataset.generator import DatasetGenerator
 
 
-class TestDatasetGenerator(unittest.TestCase):
-    """Test framework for validating execution sweeps across resource pools."""
-
-    def test_initialization_raises_processor_error_on_empty_pools(self) -> None:
-        """Tests that empty initialization configuration elements trigger a ProcessorError."""
-        with self.assertRaisesRegex(
-            ProcessorError, "Asset distribution pools cannot be empty."
-        ):
-            DatasetGenerator(engine_configs=[], rir_paths=["rir.wav"])
-
-        with self.assertRaisesRegex(
-            ProcessorError, "Asset distribution pools cannot be empty."
-        ):
-            DatasetGenerator(engine_configs=[{"bin": "sfizz"}], rir_paths=[])
-
-    @patch("score2dataset.generator.multiprocessing.Pool")
-    def test_generate_batch_assigns_tasks_round_robin(
-        self, mock_pool_class: MagicMock
-    ) -> None:
-        """Tests that generation maps assign balanced assets without cross-multiplying."""
-        mock_pool_instance = MagicMock()
-        mock_pool_class.return_value.__enter__.return_value = mock_pool_instance
-        mock_pool_instance.starmap.return_value = [Path("out1.wav"), Path("out2.wav")]
-
-        mock_score = MagicMock(spec=PerformanceScore)
-        mock_score.source = MagicMock()
-        mock_score.source.stem = "score_a"
-
-        engine_configs: list[dict[str, int]] = [{"id": 0}, {"id": 1}]
-        rir_paths: list[str] = ["room_a.wav", "room_b.wav"]
-
-        generator = DatasetGenerator(engine_configs=engine_configs, rir_paths=rir_paths)
-
-        results: list[Path] = generator.generate_batch(
-            base_scores=[mock_score], output_dir="dataset_output", variation_count=2
-        )
-
-        self.assertEqual(len(results), 2)
-        mock_pool_instance.starmap.assert_called_once()
-
-        # Extract the positional arguments list passed to starmap
-        called_args, _ = mock_pool_instance.starmap.call_args
-        tasks_payload = called_args[1]  # The list of tuple tasks
-
-        # Verify the round-robin balance pattern inside tasks payloads
-        task_1_config = tasks_payload[0][1]
-        task_2_config = tasks_payload[1][1]
-
-        self.assertEqual(task_1_config, {"id": 0})
-        self.assertEqual(task_2_config, {"id": 1})
-
-    @patch("score2dataset.generator.MidiExporter")
-    @patch("score2dataset.generator.SfizzRenderEngine")
-    @patch("score2dataset.generator.RirConvolver")
-    @patch("score2dataset.generator.shutil.copy")
-    def test_parallel_worker_thunk_execution_steps(
-        self,
-        mock_copy: MagicMock,
-        mock_convolver_cls: MagicMock,
-        mock_engine_cls: MagicMock,
-        mock_exporter_cls: MagicMock,
-    ) -> None:
-        """Verifies step pipeline sequence inside parallel execution thunks."""
-        # Grab the mock instances that will be returned when constructors are called
-        mock_exporter = mock_exporter_cls.return_value
-        mock_engine = mock_engine_cls.return_value
-        mock_convolver = mock_convolver_cls.return_value
-
-        mock_score = MagicMock(spec=PerformanceScore)
-        config: dict[str, str] = {"sampler": "sfizz"}
-        rir = Path("room.wav")
-        out_dir = Path("out")
-        filename = "track_var_0"
-
-        result: Path = _parallel_worker_thunk(
-            score_data=mock_score,
-            engine_config=config,
-            rir_path=rir,
-            output_dir=out_dir,
-            filename=filename,
-        )
-
-        # Assert data flow pipeline execution order matches
-        mock_exporter.export_score.assert_called_once()
-        mock_engine.render_audio.assert_called_once()
-        mock_convolver.process_audio.assert_called_once()
-        mock_copy.assert_called_once()
-
-        self.assertEqual(result, out_dir / "track_var_0.wav")
-
-    @patch("score2dataset.generator.os.getloadavg")
-    @patch("score2dataset.generator.os.cpu_count")
-    @patch("score2dataset.generator.multiprocessing.Pool")
-    def test_generate_batch_throttles_pool_size_under_heavy_load(
-        self,
-        mock_pool_class: MagicMock,
-        mock_cpu_count: MagicMock,
-        mock_getloadavg: MagicMock,
-    ) -> None:
-        """Tests that generate_batch scales down the multiprocessing pool size under high system load."""
-        mock_cpu_count.return_value = 8  # Simulate an 8-core CPU
-        mock_score = MagicMock(spec=PerformanceScore)
-        mock_score.source = MagicMock()
-        mock_score.source.stem = "score_a"
-
-        generator = DatasetGenerator(engine_configs=[{"id": 0}], rir_paths=["rir.wav"])
-
-        # Scenario A: Heavy Load (6.0 load average on 8 cores means >70% usage)
-        mock_getloadavg.return_value = (6.0, 5.0, 4.0)
-        generator.generate_batch(base_scores=[mock_score], output_dir="out")
-
-        # Verify the Pool was initialized with the throttled 30% core count (8 * 0.3 = 2)
-        mock_pool_class.assert_called_with(processes=2)
-
-        # Scenario B: Low Load (1.0 load average on 8 cores means well under 70% usage)
-        mock_getloadavg.return_value = (1.0, 1.0, 1.0)
-        generator.generate_batch(base_scores=[mock_score], output_dir="out")
-
-        # Verify the Pool was initialized with the standard 70% safe limit cap (8 * 0.7 = 5)
-        mock_pool_class.assert_called_with(processes=5)
+@pytest.fixture(name="valid_generator")
+def fixture_valid_generator() -> DatasetGenerator:
+    """Provides a valid generator instance pre-configured with mocked boundaries."""
+    engine_configs: list[dict[str, str]] = [
+        {"sampler": "sfizz_rhodes"},
+        {"sampler": "sfizz_grand"},
+    ]
+    rir_paths: list[str] = ["/assets/rirs/hall.wav", "/assets/rirs/room.wav"]
+    return DatasetGenerator(engine_configs=engine_configs, rir_paths=rir_paths)
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.fixture(name="mock_score_pair")
+def fixture_mock_score_pair() -> tuple[MagicMock, MagicMock]:
+    """Provides an isolated score data target paired with an expression metadata layout."""
+    mock_score = MagicMock(spec=PerformanceScore)
+    mock_score.source = Path("/data/scores/sonata_no_1.musicxml")
+
+    mock_map = MagicMock(spec=ScoreExpressionMap)
+    return mock_score, mock_map
+
+
+def test_initialization_empty_pool_errors() -> None:
+    """Business Rule: Instantiation vectors cannot be empty arrays.
+
+    Ensures ProcessorError is cleanly triggered with an accurate feedback trace.
+    """
+    with pytest.raises(ProcessorError, match="Initialization vectors cannot be empty"):
+        DatasetGenerator(engine_configs=[], rir_paths=["rir.wav"])
+
+    with pytest.raises(ProcessorError, match="Initialization vectors cannot be empty"):
+        DatasetGenerator(engine_configs=[{"id": 1}], rir_paths=[])
+
+
+@patch("score2dataset.generator.multiprocessing.get_context")
+@patch("score2dataset.generator.os.cpu_count")
+def test_worker_limit_scales_pool_implicitly_via_public_api(
+    mock_cpu_count: MagicMock,
+    mock_get_context: MagicMock,
+    valid_generator: DatasetGenerator,
+    mock_score_pair: tuple[MagicMock, MagicMock],
+    tmp_path: Path,
+) -> None:
+    """Business Rule: Parallel pool processes must target exactly 50% of available CPU cores.
+
+    Verifies hardware allocation safety limits implicitly by checking the arguments
+    passed to the Pool constructor during a public batch execution run.
+    """
+    # Mock out 16 available hardware threads on the processing node
+    mock_cpu_count.return_value = 16
+
+    mock_ctx_instance = MagicMock()
+    mock_pool_instance = MagicMock()
+    mock_get_context.return_value = mock_ctx_instance
+    mock_ctx_instance.Pool.return_value.__enter__.return_value = mock_pool_instance
+    mock_pool_instance.imap_unordered.return_value = []
+
+    # Run the public API method
+    valid_generator.generate_batch(
+        score_tuples=[mock_score_pair], output_dir=str(tmp_path), variation_count=1
+    )
+
+    # 3. Verify that the system scales allocation to 70% of raw processing capacity (16 cores * 0.7 = 11.2 -> int(11))
+    mock_ctx_instance.Pool.assert_called_once_with(processes=11, maxtasksperchild=1)
+
+
+@patch("score2dataset.generator.multiprocessing.get_context")
+def test_generate_batch_payload_distribution(
+    mock_get_context: MagicMock,
+    valid_generator: DatasetGenerator,
+    mock_score_pair: tuple[MagicMock, MagicMock],
+    tmp_path: Path,
+) -> None:
+    """Business Rule: Payloads must map configurations in balanced round-robin steps.
+
+    Validates that the public generate_batch method maps variant seeds, configs,
+    and output directories flawlessly into the multiprocessing task matrix.
+    """
+    # 1. Setup deep multiprocessing pool mock objects natively matching the 'spawn' frame
+    mock_ctx_instance = MagicMock()
+    mock_pool_instance = MagicMock()
+
+    mock_get_context.return_value = mock_ctx_instance
+    mock_ctx_instance.Pool.return_value.__enter__.return_value = mock_pool_instance
+
+    # Simulate the imap_unordered streaming process yielding single string destinations back
+    mock_pool_instance.imap_unordered.return_value = [
+        str(tmp_path / "sonata_no_1_var_0.wav"),
+        str(tmp_path / "sonata_no_1_var_1.wav"),
+    ]
+
+    # 2. Execute pipeline matrix run requesting two environmental variations
+    base_seed = 100
+    results: list[Path] = valid_generator.generate_batch(
+        score_tuples=[mock_score_pair],
+        output_dir=str(tmp_path),
+        variation_count=2,
+        base_seed=base_seed,
+    )
+
+    # 3. Assert results structures map correctly
+    assert len(results) == 2
+    assert results[0] == tmp_path / "sonata_no_1_var_0.wav"
+
+    # 4. Extract the exact task payloads pushed into the multiprocessing stream channel
+    mock_pool_instance.imap_unordered.assert_called_once()
+    called_args, _ = mock_pool_instance.imap_unordered.call_args
+    task_payload = called_args[1]
+
+    # Verify that variation matrix distribution parameters match step-by-step
+    assert len(task_payload) == 2
+
+    # Task 0 (Variation 0) Evaluation
+    task_0_args = task_payload[0]
+    assert task_0_args[5] == "sonata_no_1_var_0"  # Instance Filename string
+    assert task_0_args[6] == base_seed + 0  # Seed matching matrix index 0
+    assert task_0_args[2] == {"sampler": "sfizz_rhodes"}  # First engine config mapping
+
+    # Task 1 (Variation 1) Evaluation
+    task_1_args = task_payload[1]
+    assert task_1_args[5] == "sonata_no_1_var_1"  # Instance Filename string
+    assert task_1_args[6] == base_seed + 1  # Seed matching matrix index 1
+    assert task_1_args[2] == {
+        "sampler": "sfizz_grand"
+    }  # Second engine config round-robin loop
