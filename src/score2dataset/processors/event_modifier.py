@@ -91,7 +91,10 @@ class EventLevelModifier:
             outcome = outcomes[idx]
 
             if outcome == 0:  # Keep
-                modified_events.append(copy.deepcopy(event))
+                kept_event = copy.deepcopy(event)
+                kept_event.score_expected = 1
+                kept_event.audio_present = 1
+                modified_events.append(kept_event)
 
             elif outcome == 1:  # Substitution
                 # Sample from a discrete Gaussian using rounding transforms
@@ -104,11 +107,20 @@ class EventLevelModifier:
                     onset_ticks=event.onset_ticks,
                     duration_ticks=event.duration_ticks,
                     velocity=event.velocity,
+                    score_expected=0,
+                    audio_present=1,
                 )
                 modified_events.append(mutated_event)
                 n_sub += 1
 
             elif outcome == 2:  # Omission
+                omitted_event = copy.deepcopy(event)
+                omitted_event.score_expected = 1
+                omitted_event.audio_present = 0
+                # Safely collect the event inside our newly defined dataclass tracking field
+                if not hasattr(canonical_score, "omitted_events"):
+                    canonical_score.omitted_events = []
+                canonical_score.omitted_events.append(omitted_event)
                 n_omit += 1
                 continue
 
@@ -131,6 +143,8 @@ class EventLevelModifier:
                     onset_ticks=parent_note.onset_ticks,
                     duration_ticks=parent_note.duration_ticks,
                     velocity=parent_note.velocity,
+                    score_expected=0,
+                    audio_present=1,
                 )
                 modified_events.append(ghost_event)
 
@@ -151,4 +165,5 @@ class EventLevelModifier:
 
         perturbed_score = PerformanceScore(source=canonical_score.source)
         perturbed_score.events = modified_events
+        perturbed_score.omitted_events = getattr(canonical_score, "omitted_events", [])
         return perturbed_score

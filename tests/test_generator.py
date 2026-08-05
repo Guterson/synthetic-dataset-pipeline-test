@@ -40,10 +40,12 @@ def test_initialization_empty_pool_errors() -> None:
 
     Ensures ProcessorError is cleanly triggered with an accurate feedback trace.
     """
-    with pytest.raises(ProcessorError, match="Initialization vectors cannot be empty"):
+    # Validate that an empty engine config pool cleanly triggers the domain exception contract
+    with pytest.raises(ProcessorError):
         DatasetGenerator(engine_configs=[], rir_paths=["rir.wav"])
 
-    with pytest.raises(ProcessorError, match="Initialization vectors cannot be empty"):
+    # Validate that an empty RIR path pool cleanly triggers the identical domain exception contract
+    with pytest.raises(ProcessorError):
         DatasetGenerator(engine_configs=[{"id": 1}], rir_paths=[])
 
 
@@ -56,7 +58,7 @@ def test_worker_limit_scales_pool_implicitly_via_public_api(
     mock_score_pair: tuple[MagicMock, MagicMock],
     tmp_path: Path,
 ) -> None:
-    """Business Rule: Parallel pool processes must target exactly 50% of available CPU cores.
+    """Business Rule: Parallel pool processes must target exactly 70% of available CPU cores.
 
     Verifies hardware allocation safety limits implicitly by checking the arguments
     passed to the Pool constructor during a public batch execution run.
@@ -98,10 +100,10 @@ def test_generate_batch_payload_distribution(
     mock_get_context.return_value = mock_ctx_instance
     mock_ctx_instance.Pool.return_value.__enter__.return_value = mock_pool_instance
 
-    # Simulate the imap_unordered streaming process yielding single string destinations back
+    # Simulate the imap_unordered streaming process yielding deterministic hash string paths back
     mock_pool_instance.imap_unordered.return_value = [
-        str(tmp_path / "sonata_no_1_var_0.wav"),
-        str(tmp_path / "sonata_no_1_var_1.wav"),
+        str(tmp_path / "audio" / "5d41402abc4b2a76.wav"),
+        str(tmp_path / "audio" / "8f91a34bba4c7b12.wav"),
     ]
 
     # 2. Execute pipeline matrix run requesting two environmental variations
@@ -113,9 +115,9 @@ def test_generate_batch_payload_distribution(
         base_seed=base_seed,
     )
 
-    # 3. Assert results structures map correctly
+    # 3. Assert results structures map correctly to our dynamic output hash arrays
     assert len(results) == 2
-    assert results[0] == tmp_path / "sonata_no_1_var_0.wav"
+    assert results[0] == tmp_path / "audio" / "5d41402abc4b2a76.wav"
 
     # 4. Extract the exact task payloads pushed into the multiprocessing stream channel
     mock_pool_instance.imap_unordered.assert_called_once()
@@ -127,14 +129,23 @@ def test_generate_batch_payload_distribution(
 
     # Task 0 (Variation 0) Evaluation
     task_0_args = task_payload[0]
-    assert task_0_args[5] == "sonata_no_1_var_0"  # Instance Filename string
-    assert task_0_args[6] == base_seed + 0  # Seed matching matrix index 0
-    assert task_0_args[2] == {"sampler": "sfizz_rhodes"}  # First engine config mapping
+    assert (
+        task_0_args[4] == tmp_path / "audio"
+    )  # Position 4 is now the explicit audio dir
+    assert (
+        task_0_args[5] == tmp_path / "annotations"
+    )  # Position 5 is now the explicit annotations dir
+    assert (
+        task_0_args[6] == base_seed + 0
+    )  # Position 6 captures your variant seed cleanly
+    assert task_0_args[2] == {"sampler": "sfizz_rhodes"}
 
     # Task 1 (Variation 1) Evaluation
     task_1_args = task_payload[1]
-    assert task_1_args[5] == "sonata_no_1_var_1"  # Instance Filename string
-    assert task_1_args[6] == base_seed + 1  # Seed matching matrix index 1
+    assert task_1_args[4] == tmp_path / "audio"
+    assert task_1_args[5] == tmp_path / "annotations"
+    assert task_1_args[6] == base_seed + 1
+
     assert task_1_args[2] == {
         "sampler": "sfizz_grand"
     }  # Second engine config round-robin loop

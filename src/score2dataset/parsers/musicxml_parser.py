@@ -8,12 +8,14 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Final
 
+from score2dataset.config import DEFAULT_VELOCITY, NOMINAL_VELOCITIES, STANDARD_TPQN
 from score2dataset.datamodels import (
     NoteEvent,
     PerformanceScore,
     ScoreExpressionMap,
     WedgeEvent,
 )
+from score2dataset.exceptions import ParserError
 from score2dataset.parsers.score_parser import ScoreParser
 
 
@@ -34,18 +36,7 @@ class MusicXMLParser(ScoreParser):
         "B": 11,
     }
 
-    _DYNAMICS_VELOCITY_MAP: Final[dict[str, int]] = {
-        "ppp": 16,
-        "pp": 33,
-        "p": 49,
-        "mp": 64,
-        "mf": 80,
-        "f": 96,
-        "ff": 112,
-        "fff": 126,
-    }
-
-    def __init__(self, target_tpqn: int = 480) -> None:
+    def __init__(self, target_tpqn: int = STANDARD_TPQN) -> None:
         """Initializes the parser configurations and immutable musical maps."""
         self.target_tpqn: int = target_tpqn
 
@@ -66,25 +57,27 @@ class MusicXMLParser(ScoreParser):
             or divisions_elem.text is None
             or not divisions_elem.text.strip().isdigit()
         ):
-            raise ValueError(
+            raise ParserError(
                 f"Invalid MusicXML structure: Global <divisions> definition error in '{file_path}'."
             )
 
         xml_divisions = int(divisions_elem.text)
         if xml_divisions == 0:
-            raise ValueError(
+            raise ParserError(
                 f"Invalid MusicXML layout: Global <divisions> cannot be zero in '{file_path}'."
             )
 
         tick_scale_factor: float = self.target_tpqn / xml_divisions
         self._parse_global_metadata(root, expression_map)
 
-        current_velocity = 80
+        current_velocity = DEFAULT_VELOCITY
         active_wedges: dict[str, WedgeEvent] = {}
-        active_slurs: dict[str, int] = {}
 
         for part in root.findall(path=".//part"):
+            active_wedges = {}
+            active_slurs: dict[str, int] = {}
             current_xml_time_accumulator = 0
+            chord_root_onset = 0
 
             for measure in part.findall(path=".//measure"):
                 for element in measure:
@@ -128,11 +121,11 @@ class MusicXMLParser(ScoreParser):
                             continue
 
                         is_chord = element.find(path="chord") is not None
-                        target_onset_time = (
-                            current_xml_time_accumulator - raw_xml_duration
-                            if is_chord
-                            else current_xml_time_accumulator
-                        )
+                        if is_chord:
+                            target_onset_time = chord_root_onset
+                        else:
+                            target_onset_time = current_xml_time_accumulator
+                            chord_root_onset = current_xml_time_accumulator
                         baked_onset_ticks = round(target_onset_time * tick_scale_factor)
 
                         # Extract isolated local metadata layers safely
@@ -237,7 +230,7 @@ class MusicXMLParser(ScoreParser):
 
         dyn_elem = element.find(path=".//dynamics/*")
         if dyn_elem is not None:
-            return self._DYNAMICS_VELOCITY_MAP.get(dyn_elem.tag.lower(), 80)
+            return NOMINAL_VELOCITIES.get(dyn_elem.tag.lower(), DEFAULT_VELOCITY)
 
         return current_velocity
 

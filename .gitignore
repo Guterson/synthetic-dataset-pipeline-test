@@ -2,9 +2,16 @@
 data/outputs/
 data/inputs/
 data/assets/
+data/raw_downloads/
 *.wav
 *.mid
 *.midi
+*.sfz
+
+# --- Model Checkpoints & Weights ---
+checkpoints/
+runs/
+*.pt
 
 # --- Python & Environment Caches ---
 __pycache__/

@@ -4,6 +4,7 @@ Ensures stochastic mutations adhere to state consistency contracts, reproducibil
 matrices, and rigorous error boundaries.
 """
 
+import copy
 from pathlib import Path
 
 import pytest
@@ -65,11 +66,29 @@ def test_rng_reproducibility(mock_score: PerformanceScore) -> None:
 
 def test_rng_independence(mock_score: PerformanceScore) -> None:
     """Ensures that disparate initialization seeds yield non-identical timeline variations."""
-    modifier_a = EventLevelModifier(seed=111)
-    modifier_b = EventLevelModifier(seed=999)
+    modifier_a = EventLevelModifier(
+        p_keep=0.5,
+        p_sub=0.2,
+        p_omit=0.3,
+        poisson_lambda=1.0,
+        threshold_gamma=1.0,
+        seed=111,
+    )
+    modifier_b = EventLevelModifier(
+        p_keep=0.5,
+        p_sub=0.2,
+        p_omit=0.3,
+        poisson_lambda=1.0,
+        threshold_gamma=1.0,
+        seed=999,
+    )
 
-    score_a: PerformanceScore = modifier_a.perturb_score(canonical_score=mock_score)
-    score_b: PerformanceScore = modifier_b.perturb_score(canonical_score=mock_score)
+    score_a: PerformanceScore = modifier_a.perturb_score(
+        canonical_score=copy.deepcopy(mock_score)
+    )
+    score_b: PerformanceScore = modifier_b.perturb_score(
+        canonical_score=copy.deepcopy(mock_score)
+    )
 
     # A sufficiently deep transformation list must drift with distinct seeds
     serialized_a: list[tuple[int, int, int]] = [
@@ -98,7 +117,9 @@ def test_extreme_omission_profile(mock_score: PerformanceScore) -> None:
     """Forces the omission threshold to maximum to guarantee notes are dropped correctly."""
     # Force p_omit to high values via instantiation args if your API allows it,
     # or pass specific test parameters to check structural dropping logic safely.
-    modifier = EventLevelModifier(p_keep=0.0, p_sub=0.0, p_omit=1.0, seed=123)
+    modifier = EventLevelModifier(
+        p_keep=0.0, p_sub=0.0, p_omit=1.0, threshold_gamma=1.0, seed=123
+    )
     mutated_score: PerformanceScore = modifier.perturb_score(canonical_score=mock_score)
 
     # Timeline should either be cleared completely or reduced to zero notes

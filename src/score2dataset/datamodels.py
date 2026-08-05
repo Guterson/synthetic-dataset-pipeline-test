@@ -29,9 +29,17 @@ class NoteEvent:
     duration_ticks: int
     """The total sustained duration of the note measured in musical ticks."""
 
-    velocity: int = 64
+    velocity: int = 80
     """The dynamic striking force / volume layer of the note event, ranging from 
-    0 (silent) to 127 (maximum amplitude). Defaults to a standard mezzanine of 64."""
+    0 (silent) to 127 (maximum amplitude). Defaults to a standard mezzoforte of 80."""
+
+    score_expected: int = 1
+    """Binary auditing flag tracking if this note was written in the original score.
+    1 = Yes (Preserved or Omitted), 0 = No (Substitution or Ghost Note)."""
+
+    audio_present: int = 1
+    """Binary auditing flag tracking if this note physically manifests in the audio waveform.
+    1 = Yes (Preserved, Substituted, or Ghost Note), 0 = No (Omitted)."""
 
 
 @dataclass
@@ -51,6 +59,10 @@ class PerformanceScore:
     events: list[NoteEvent] = field(default_factory=list)
     """An ordered array of NoteEvent instances representing the complete 
     polyphonic sequence of the performance."""
+
+    omitted_events: list[NoteEvent] = field(default_factory=list)
+    """An isolated array of NoteEvent objects that were chosen to be omitted
+    during mutation, retained strictly to audit False Negatives later."""
 
 
 @dataclass

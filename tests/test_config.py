@@ -5,7 +5,7 @@ from score2dataset import config
 
 def test_tempo_bounds_mathematical_consistency() -> None:
     """Ensure the minimum BPM remains lower than the maximum BPM."""
-    assert config.MIN_PLAYABLE_BPM < config.MAX_PLAYABLE_BPM
+    assert config.MIN_BPM < config.MAX_BPM
 
 
 def test_grid_resolution_constraints() -> None:
@@ -17,4 +17,4 @@ def test_grid_resolution_constraints() -> None:
 def test_velocity_table_coverage() -> None:
     """Verify that the dynamics dictionary maps correct string levels."""
     assert "mf" in config.NOMINAL_VELOCITIES
-    assert config.NOMINAL_VELOCITIES["mf"] == config.DEFAULT_MIDI_VELOCITY
+    assert config.NOMINAL_VELOCITIES["mf"] == config.DEFAULT_VELOCITY

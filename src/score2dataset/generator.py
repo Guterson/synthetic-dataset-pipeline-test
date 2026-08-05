@@ -6,6 +6,8 @@ entirely in memory before executing stateless, local cache audio renders.
 
 import copy
 import gc
+import glob
+import hashlib
 import multiprocessing
 import os
 import shutil
@@ -29,7 +31,7 @@ from score2dataset.processors.temporal_jitter import TemporalJitterModifier
 
 def _isolated_render_thunk(
     task_args: tuple[
-        PerformanceScore, ScoreExpressionMap, dict[str, Any], Path, Path, str, int
+        PerformanceScore, ScoreExpressionMap, dict[str, Any], Path, Path, Path, int
     ],
 ) -> str:
     """Executes humanization, audio rendering, and convolution inside an isolated process.
@@ -41,8 +43,8 @@ def _isolated_render_thunk(
         expression_map,
         engine_config,
         rir_path,
-        output_dir,
-        filename,
+        audio_out_dir,
+        annotations_out_dir,
         variation_seed,
     ) = task_args
 
@@ -80,7 +82,7 @@ def _isolated_render_thunk(
     except Exception as perturbation_error:
         # If a Structural Integrity Threshold is broken, wrap it cleanly for the pool tracker
         raise ProcessorError(
-            f"Humanizer pipeline failed on {filename}: {perturbation_error}"
+            f"Humanizer pipeline failed on {base_score.source.name} (Seed: {variation_seed}): {perturbation_error}"
         ) from perturbation_error
 
     # 3. Stateless Audio Rendering Pipe using RAM-isolated local cache storage (/tmp)
@@ -88,7 +90,36 @@ def _isolated_render_thunk(
     convolver = RirConvolver()
     engine = SfizzRenderEngine(**engine_config)
 
-    final_destination: Path = output_dir / f"{filename}.wav"
+    # Extract the absolute SFZ path directly from your engine configuration
+    sfz_asset_path = Path(engine_config["sfz_path"])
+
+    # Construct the audit payload string using the distinct transformation inputs
+    audit_payload = f"{base_score.source.name}_{sfz_asset_path.name}_{rir_path.name}_{variation_seed}"
+    hashed_id = hashlib.sha256(audit_payload.encode("utf-8")).hexdigest()[:16]
+
+    # Assign the destination path using the concise 16-character hexadecimal hash identifier
+    final_destination: Path = audio_out_dir / f"{hashed_id}.wav"
+
+    # Write a completely isolated, thread-safe micro-manifest for this specific variation
+    sidecar_manifest: Path = audio_out_dir / ".." / f"{hashed_id}.manifest"
+    with open(sidecar_manifest, mode="w", encoding="utf-8") as f:
+        f.write(
+            f"{hashed_id},{base_score.source.name},{sfz_asset_path.name},{rir_path.name},{variation_seed}\n"
+        )
+
+    csv_truth_path: Path = annotations_out_dir / f"{hashed_id}.csv"
+    all_tracked_events = list(perturbed_score.events) + getattr(
+        perturbed_score, "omitted_events", []
+    )
+    all_tracked_events.sort(key=lambda e: e.onset_ticks)
+
+    with open(csv_truth_path, mode="w", encoding="utf-8") as csv_file:
+        csv_file.write("onset_time,pitch_midi,score_expected,audio_present\n")
+        for event in all_tracked_events:
+            onset_seconds: float = float(event.onset_ticks / 960.0)
+            csv_file.write(
+                f"{onset_seconds:.7f},{event.pitch},{event.score_expected},{event.audio_present}\n"
+            )
 
     try:
         with tempfile.TemporaryDirectory(dir="/tmp") as local_cache:
@@ -119,11 +150,13 @@ def _isolated_render_thunk(
         del artic_mod
         del intensity_mod
 
-    return str(final_destination)
+    # Returning both the path and the hash allows the outer pool manager to easily map
+    # the structured parameters straight into your global 'manifest.csv' file.
+    return f"{hashed_id}|{final_destination}"
 
 
 class DatasetGenerator:
-    """Orchestrates parallel dataset synthesis beneath volatile university memory caps."""
+    """Orchestrates parallel dataset synthesis beneath volatile memory caps."""
 
     def __init__(
         self, engine_configs: list[dict[str, Any]], rir_paths: list[str]
@@ -154,8 +187,12 @@ class DatasetGenerator:
         Returns:
             A list of Path locations tracking every successfully generated file variation.
         """
-        resolved_out_dir: Path = Path(output_dir).resolve()
-        resolved_out_dir.mkdir(parents=True, exist_ok=True)
+        output_path: Path = Path(output_dir).resolve()
+        audio_out_path: Path = output_path / "audio"
+        annotations_out_path: Path = output_path / "annotations"
+
+        audio_out_path.mkdir(parents=True, exist_ok=True)
+        annotations_out_path.mkdir(parents=True, exist_ok=True)
 
         worker_concurrency: int = self._calculate_conservative_worker_limit()
         task_payload: list[
@@ -165,17 +202,15 @@ class DatasetGenerator:
                 dict[str, Any],
                 Path,
                 Path,
-                str,
+                Path,
                 int,
             ]
         ] = []
         matrix_index: int = 0
 
         for score, expression_map in score_tuples:
-            base_name: str = score.source.stem
 
-            for v_idx in range(variation_count):
-                instance_filename: str = f"{base_name}_var_{v_idx}"
+            for _ in range(variation_count):
 
                 # Deriving a mathematically unique, predictable variant seed for this specific execution loop
                 variant_seed: int = base_seed + matrix_index
@@ -196,8 +231,8 @@ class DatasetGenerator:
                         mutated_map,
                         selected_config,
                         selected_rir,
-                        resolved_out_dir,
-                        instance_filename,
+                        audio_out_path,
+                        annotations_out_path,
                         variant_seed,
                     )
                 )
@@ -227,6 +262,23 @@ class DatasetGenerator:
 
                 gc.collect()
 
+        # Run a synchronized aggregation loop to merge all isolated thread-safe micro-manifest sidecar files
+        manifest_csv_path: Path = output_path / "manifest.csv"
+        manifest_search_pattern: str = str(output_path / "*.manifest")
+
+        print("📊 Consolidating centralized dataset auditing ledger...")
+        with open(manifest_csv_path, mode="w", encoding="utf-8") as master_manifest:
+            # Write the single, canonical column schema header
+            master_manifest.write(
+                "file_hash,piece,sfz_instrument,rir_convolution,seed\n"
+            )
+
+            # Read each sidecar file, append its data row, and delete the temporary footprint
+            for sidecar_path_str in glob.glob(manifest_search_pattern):
+                sidecar_path = Path(sidecar_path_str)
+                master_manifest.write(sidecar_path.read_text(encoding="utf-8"))
+                sidecar_path.unlink()
+
         print(
             f"\n🎉 Generation successful! {len(completed_records)} files compiled smoothly beneath memory caps.\n"
         )
@@ -235,4 +287,4 @@ class DatasetGenerator:
     def _calculate_conservative_worker_limit(self) -> int:
         """Computes hardware allocation safety limits."""
         hardware_cores: int = os.cpu_count() or 1
-        return max(1, int(hardware_cores * 0.5))
+        return max(1, int(hardware_cores * 0.7))
