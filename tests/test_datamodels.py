@@ -1,80 +1,73 @@
-"""Unit tests for the score2dataset data models.
+"""Data validation and default property structural checks for the core score2dataset data models.
 
-This suite ensures structural integrity, default property behaviors,
-and future-proof validations for notes, scores, and dataset entries.
+This module verifies that notes, performance timelines, and terminal dataset asset
+receipts correctly instantiate fields, preserve data types, and retain custom
+asymmetric tracking default values.
 """
 
-import unittest
 from pathlib import Path
 
+from score2dataset.config import DEFAULT_VELOCITY
 from score2dataset.datamodels import DatasetEntry, NoteEvent, PerformanceScore
 
 
-class TestDataModels(unittest.TestCase):
-    """Encapsulates test cases verifying dataclass state and constraints."""
+def test_note_event_creation_with_defaults() -> None:
+    """Ensure velocity defaults to a mezzo-forte value of 80 and auditing flags initialize to 1."""
+    note = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480)
 
-    # =========================================================================
-    # NOTEEVENT TESTS
-    # =========================================================================
-
-    def test_note_event_creation_with_defaults(self) -> None:
-        """Ensure velocity defaults to a mezzo-forte value of 64."""
-        # Future property renames only require updating this instantiation
-        note = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480)
-
-        self.assertEqual(note.velocity, 64)
-
-    def test_note_event_integrity(self) -> None:
-        """Verify all explicit assignments map correctly to fields."""
-        note = NoteEvent(
-            pitch=72,
-            onset_ticks=240,
-            duration_ticks=120,
-            velocity=100,
-        )
-
-        self.assertEqual(note.pitch, 72)
-        self.assertEqual(note.onset_ticks, 240)
-        self.assertEqual(note.duration_ticks, 120)
-        self.assertEqual(note.velocity, 100)
-
-    # =========================================================================
-    # PERFORMANCESCORE TESTS
-    # =========================================================================
-
-    def test_performance_score_initializes_empty_list(self) -> None:
-        """Confirm a newly parsed score defaults to an empty event array."""
-        mock_path = Path("mock_score.musicxml")
-        score = PerformanceScore(source=mock_path)
-
-        self.assertIsInstance(score.events, list)
-        self.assertEqual(len(score.events), 0)
-
-    def test_performance_score_can_hold_events(self) -> None:
-        """Validate appending active events into the score container."""
-        score = PerformanceScore(source=Path("mock_score.musicxml"))
-        note = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480)
-
-        score.events.append(note)
-
-        self.assertEqual(len(score.events), 1)
-        self.assertEqual(score.events[0].pitch, 60)
-
-    # =========================================================================
-    # DATASETENTRY TESTS
-    # =========================================================================
-
-    def test_dataset_entry_fields(self) -> None:
-        """Assert final receipt properties match system export targets."""
-        audio = Path("/tmp/render.wav")
-        ground_truth = Path("/tmp/labels.json")
-
-        entry = DatasetEntry(audio_path=audio, ground_truth_path=ground_truth)
-
-        self.assertEqual(entry.audio_path, audio)
-        self.assertEqual(entry.ground_truth_path, ground_truth)
-        self.assertEqual(entry.id, "")
+    assert note.velocity == DEFAULT_VELOCITY
+    assert note.score_expected == 1
+    assert note.audio_present == 1
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_note_event_integrity() -> None:
+    """Verify all explicit assignments map correctly to fields."""
+    note = NoteEvent(
+        pitch=72,
+        onset_ticks=240,
+        duration_ticks=120,
+        velocity=100,
+        score_expected=0,
+        audio_present=1,
+    )
+
+    assert note.pitch == 72
+    assert note.onset_ticks == 240
+    assert note.duration_ticks == 120
+    assert note.velocity == 100
+    assert note.score_expected == 0
+    assert note.audio_present == 1
+
+
+def test_performance_score_initializes_empty_list() -> None:
+    """Confirm a newly parsed score defaults to empty primary and omitted event arrays."""
+    mock_path = Path("mock_score.musicxml")
+    score = PerformanceScore(source=mock_path)
+
+    assert isinstance(score.events, list)
+    assert len(score.events) == 0
+    assert isinstance(score.omitted_events, list)
+    assert len(score.omitted_events) == 0
+
+
+def test_performance_score_can_hold_events() -> None:
+    """Validate appending active events into the score container."""
+    score = PerformanceScore(source=Path("mock_score.musicxml"))
+    note = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480)
+
+    score.events.append(note)
+
+    assert len(score.events) == 1
+    assert score.events[0].pitch == 60
+
+
+def test_dataset_entry_fields(tmp_path: Path) -> None:
+    """Assert final receipt properties match system export targets using safe pytest sandbox paths."""
+    audio = tmp_path / "render.wav"
+    ground_truth = tmp_path / "labels.json"
+
+    entry = DatasetEntry(audio_path=audio, ground_truth_path=ground_truth)
+
+    assert entry.audio_path == audio
+    assert entry.ground_truth_path == ground_truth
+    assert entry.id == ""

@@ -6,9 +6,10 @@ back into sequential, delta-time MIDI streams compliant with standard MIDI file 
 
 from pathlib import Path
 
-from mido import Message, MetaMessage, MidiFile, MidiTrack
+from mido import Message, MetaMessage, MidiFile, MidiTrack  # Type: ignore
 
 from score2dataset.datamodels import PerformanceScore
+from score2dataset.exceptions import ExporterError
 
 
 class MidiExporter:
@@ -45,7 +46,7 @@ class MidiExporter:
             instrument_program: Standard MIDI patch program index (0-127). Defaults to 0.
 
         Raises:
-            IOError: If writing to the target output path fails due to system constraints.
+            ExporterError: If writing to the target output path fails due to system constraints.
         """
         mid = MidiFile(ticks_per_beat=self.target_tpqn)
         track = MidiTrack()
@@ -106,4 +107,9 @@ class MidiExporter:
                 )
             )
 
-        mid.save(filename=str(object=output_path))
+        try:
+            mid.save(filename=str(object=output_path))
+        except OSError as write_error:
+            raise ExporterError(
+                f"MIDI serialization failed. Unable to write file to target path '{output_path}': {write_error}"
+            ) from write_error

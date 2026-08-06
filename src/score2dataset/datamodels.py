@@ -29,9 +29,17 @@ class NoteEvent:
     duration_ticks: int
     """The total sustained duration of the note measured in musical ticks."""
 
-    velocity: int = 64
+    velocity: int = 80
     """The dynamic striking force / volume layer of the note event, ranging from 
-    0 (silent) to 127 (maximum amplitude). Defaults to a standard mezzanine of 64."""
+    0 (silent) to 127 (maximum amplitude). Defaults to a standard mezzoforte of 80."""
+
+    score_expected: int = 1
+    """Binary auditing flag tracking if this note was written in the original score.
+    1 = Yes (Preserved or Omitted), 0 = No (Substitution or Ghost Note)."""
+
+    audio_present: int = 1
+    """Binary auditing flag tracking if this note physically manifests in the audio waveform.
+    1 = Yes (Preserved, Substituted, or Ghost Note), 0 = No (Omitted)."""
 
 
 @dataclass
@@ -51,6 +59,10 @@ class PerformanceScore:
     events: list[NoteEvent] = field(default_factory=list)
     """An ordered array of NoteEvent instances representing the complete 
     polyphonic sequence of the performance."""
+
+    omitted_events: list[NoteEvent] = field(default_factory=list)
+    """An isolated array of NoteEvent objects that were chosen to be omitted
+    during mutation, retained strictly to audit False Negatives later."""
 
 
 @dataclass
@@ -72,3 +84,43 @@ class DatasetEntry:
     id: str = ""
     """A unique identifying hash or string tracking this specific 
     performance variation within the broader generated dataset pool."""
+
+
+@dataclass
+class WedgeEvent:
+    """Tracks the continuous boundaries of a dynamic hairpin volume slope (Crescendo/Decrescendo)."""
+
+    wedge_type: str  # "crescendo" or "decrescendo"
+    onset_tick: int
+    offset_tick: int = -1
+
+
+@dataclass
+class ScoreExpressionMap:
+    """Carries structural metadata, textual notation markers, and spanners from a score.
+
+    Acts as the comprehensive metadata exchange layer bridging the gap between
+    raw sheet extraction and independent humanizing processors.
+    """
+
+    initial_tempo_marking: str = "Andante"
+    beats_per_bar: int = 4
+    ticks_per_beat: int = 480  # Forced 480 TPQN baseline
+    total_ticks: int = 0
+
+    """Broad interpretive changes over time
+    e.g., {2400: "ritardando", 9600: "tempo_primo"}
+    """
+    text_directions: dict[int, str] = field(default_factory=dict)
+
+    """Continuous dynamic volume shapes (Hairpins) """
+    dynamic_wedges: list[WedgeEvent] = field(default_factory=list)
+
+    # 3. Individual note articulation overlays
+    # Maps absolute tick locations to specific structural modifiers
+    # e.g., {1440: {"staccato", "accent"}, 2880: {"tenuto"}}
+    local_articulations: dict[int, set[str]] = field(default_factory=dict)
+
+    # 4. Phrasing boundaries for physical legato connection tracking
+    # List of tuple brackets tracking slur zones: e.g., [(start_tick, end_tick)]
+    slur_phrases: list[tuple[int, int]] = field(default_factory=list)

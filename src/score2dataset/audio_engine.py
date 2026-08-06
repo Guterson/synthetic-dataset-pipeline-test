@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Literal
 
-from score2dataset.exceptions import AudioEngineError  # Safe central import
+from score2dataset.exceptions import AudioEngineError
 
 
 class AudioEngine(ABC):
@@ -86,7 +86,6 @@ class SfizzRenderEngine(AudioEngine):
             A validated Path object pointing to the binary file destination.
         """
 
-        # Inject your specific lab user-space bin directory into the lookup array
         user_bin_tree: str = os.path.expanduser(path="~/.local/bin")
 
         # Combine your local directory with the global system PATH string
@@ -106,7 +105,7 @@ class SfizzRenderEngine(AudioEngine):
         self,
         midi_path: Path,
         output_wav_path: Path,
-        sample_rate: int = 44100,
+        sample_rate: int = 48000,
         block_size: int = 512,
         polyphony: int = 64,
     ) -> None:
@@ -119,12 +118,11 @@ class SfizzRenderEngine(AudioEngine):
             str(object=midi_path.resolve()),
             "--wav",
             str(object=output_wav_path.resolve()),
-            "--mono",
-            "--samplerate",
-            str(object=sample_rate),
             "--blocksize",
             str(object=block_size),
-            "--voices",
+            "--samplerate",
+            str(object=sample_rate),
+            "--polyphony",
             str(object=polyphony),
         ]
 

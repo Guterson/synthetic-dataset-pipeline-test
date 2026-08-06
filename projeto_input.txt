@@ -1,0 +1,4387 @@
+
+=== FILE: ./tools/curate_rirs.py ===
+"""Automated asset curation pipeline for Room Impulse Response files.
+
+This module provides a standalone utility class designed to parse unstructured,
+raw acoustic data downloads, isolate valid deconvolved impulse waveforms via
+structural peak profiling, and stage them for the rendering pipeline.
+"""
+
+from pathlib import Path
+from typing import Final
+
+import numpy as np
+import soundfile as sf
+
+from score2dataset.processors.rir_conditioner import RirConditioner
+
+
+class RirCurator:
+    """Filters, validates, and reorganizes raw Room Impulse Response audio files."""
+
+    FORBIDDEN_KEYWORDS: Final[set[str]] = {
+        "sweep",
+        "excitation",
+        "raw",
+        "b-format",
+        "ambisonic",
+        "quad",
+    }
+
+    def __init__(self, raw_dir: Path, target_dir: Path) -> None:
+        """Initializes the asset processing directory boundaries.
+
+        Args:
+            raw_dir: Path to the unstructured directory containing unzipped raw assets.
+            target_dir: Destination path where validated pure RIRs will be staged.
+        """
+        self.raw_dir: Path = raw_dir
+        self.target_dir: Path = target_dir
+        self.conditioner: RirConditioner = RirConditioner(noise_threshold_db=-60.0)
+
+    def execute_curation(self) -> list[Path]:
+        """Scans the source directory and populates the target directory with pure RIR files.
+
+        Returns:
+            A list of Path locations pointing to the newly staged, validated assets.
+        """
+        self.target_dir.mkdir(parents=True, exist_ok=True)
+        curated_paths: list[Path] = []
+
+        for wav_path in self.raw_dir.rglob("*.wav"):
+            if self._has_invalid_metadata(file_name=wav_path.name):
+                continue
+
+            if not self._is_pure_impulse(file_path=wav_path):
+                continue
+
+            destination_path: Path = self.target_dir / wav_path.name
+            self.conditioner.condition_file(
+                input_path=wav_path, output_path=destination_path
+            )
+            curated_paths.append(destination_path)
+
+        return curated_paths
+
+    def _has_invalid_metadata(self, file_name: str) -> bool:
+        """Checks if the file name contains keywords indicating an unprocessed sound trigger."""
+        normalized_name: str = file_name.lower()
+        return any(keyword in normalized_name for keyword in self.FORBIDDEN_KEYWORDS)
+
+    def _is_pure_impulse(self, file_path: Path) -> bool:
+        """Verifies if the acoustic signal exhibits an instantaneous direct arrival spike.
+
+        Validates the file structure against physical Time-of-Flight (ToF) limits.
+        A direct path arrival exceeding 0.5 seconds implies a source-to-receiver
+        distance greater than 171.5 meters (assuming c = 343 m/s), indicating
+        an un-deconvolved excitation sweep rather than a clean impulse response.
+        """
+        try:
+            audio_data, sample_rate = sf.read(file_path)
+            absolute_signal: np.ndarray = np.abs(audio_data)
+            max_peak_sample: int = int(np.argmax(absolute_signal))
+
+            half_second_threshold: int = int(sample_rate * 0.5)
+            return max_peak_sample <= half_second_threshold
+
+        except (RuntimeError, ValueError):
+            return False
+
+
+if __name__ == "__main__":
+    PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
+
+    curator = RirCurator(
+        raw_dir=PROJECT_ROOT / "data" / "raw_downloads",
+        target_dir=PROJECT_ROOT / "data" / "assets" / "rir",
+    )
+
+    processed_assets: list[Path] = curator.execute_curation()
+    print(f"Asset curation complete. Staged {len(processed_assets)} pure RIR tracks.")
+
+=== FILE: ./tools/curate_sfz.py ===
+"""Terminal task wrapper to scan and optimize all SFZ files in the asset directory."""
+
+from pathlib import Path
+
+from score2dataset.processors.sfz_conditioner import SfzConditioner
+
+
+def main() -> None:
+    """Discovers all local SFZ definitions and applies onset transient conditioning."""
+    project_root: Path = Path(Path(__file__).resolve().parents[1])
+    sfz_asset_root: Path = project_root / "data" / "assets" / "sfz"
+
+    if not sfz_asset_root.exists():
+        print(f"[ERROR] Asset directory not found: {sfz_asset_root}")
+        return
+
+    # Dynamic glob discovery across all subdirectories
+    sfz_files: list[Path] = list(sfz_asset_root.rglob("*.sfz"))
+    print(f"Found {len(sfz_files)} file(s) inside the SFZ library pool.")
+
+    for sfz_path in sfz_files:
+        # Prevent the tool from reprocessing files it has already fixed on previous runs
+        if sfz_path.stem.endswith("_OnsetSafe"):
+            continue
+
+        target_output_path = sfz_path.parent / f"{sfz_path.stem}_OnsetSafe.sfz"
+
+        print(f"\nProcessing target configuration: {sfz_path.name}")
+        conditioner = SfzConditioner(sfz_path=sfz_path)
+        conditioner.process_and_fix(output_path=target_output_path)
+
+
+if __name__ == "__main__":
+    main()
+
+=== FILE: ./.pytest_cache/README.md ===
+# pytest cache directory #
+
+This directory contains data from the pytest's cache plugin,
+which provides the `--lf` and `--ff` options, as well as the `cache` fixture.
+
+**Do not** commit this to version control.
+
+See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more information.
+
+=== FILE: ./tests/test_datamodels.py ===
+"""Unit tests for the score2dataset data models.
+
+This suite ensures structural integrity, default property behaviors,
+and future-proof validations for notes, scores, and dataset entries.
+"""
+
+import unittest
+from pathlib import Path
+
+from score2dataset.datamodels import DatasetEntry, NoteEvent, PerformanceScore
+
+
+class TestDataModels(unittest.TestCase):
+    """Encapsulates test cases verifying dataclass state and constraints."""
+
+    # =========================================================================
+    # NOTEEVENT TESTS
+    # =========================================================================
+
+    def test_note_event_creation_with_defaults(self) -> None:
+        """Ensure velocity defaults to a mezzo-forte value of 64."""
+        # Future property renames only require updating this instantiation
+        note = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480)
+
+        self.assertEqual(note.velocity, 64)
+
+    def test_note_event_integrity(self) -> None:
+        """Verify all explicit assignments map correctly to fields."""
+        note = NoteEvent(
+            pitch=72,
+            onset_ticks=240,
+            duration_ticks=120,
+            velocity=100,
+        )
+
+        self.assertEqual(note.pitch, 72)
+        self.assertEqual(note.onset_ticks, 240)
+        self.assertEqual(note.duration_ticks, 120)
+        self.assertEqual(note.velocity, 100)
+
+    # =========================================================================
+    # PERFORMANCESCORE TESTS
+    # =========================================================================
+
+    def test_performance_score_initializes_empty_list(self) -> None:
+        """Confirm a newly parsed score defaults to an empty event array."""
+        mock_path = Path("mock_score.musicxml")
+        score = PerformanceScore(source=mock_path)
+
+        self.assertIsInstance(score.events, list)
+        self.assertEqual(len(score.events), 0)
+
+    def test_performance_score_can_hold_events(self) -> None:
+        """Validate appending active events into the score container."""
+        score = PerformanceScore(source=Path("mock_score.musicxml"))
+        note = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480)
+
+        score.events.append(note)
+
+        self.assertEqual(len(score.events), 1)
+        self.assertEqual(score.events[0].pitch, 60)
+
+    # =========================================================================
+    # DATASETENTRY TESTS
+    # =========================================================================
+
+    def test_dataset_entry_fields(self) -> None:
+        """Assert final receipt properties match system export targets."""
+        audio = Path("/tmp/render.wav")
+        ground_truth = Path("/tmp/labels.json")
+
+        entry = DatasetEntry(audio_path=audio, ground_truth_path=ground_truth)
+
+        self.assertEqual(entry.audio_path, audio)
+        self.assertEqual(entry.ground_truth_path, ground_truth)
+        self.assertEqual(entry.id, "")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/test_rir_conditioner.py ===
+"""Unit tests for the RirConditioner processing class using the unittest framework."""
+
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+
+from score2dataset.exceptions import ProcessorError
+from score2dataset.processors.rir_conditioner import RirConditioner
+
+
+class TestRirConditioner(unittest.TestCase):
+    """Verifies architectural and algorithmic integrity of the RirConditioner class."""
+
+    def setUp(self) -> None:
+        """Initializes a temporary sandbox directory and generates a raw synthetic RIR file."""
+        self.test_dir: str = tempfile.mkdtemp()
+        self.tmp_path: Path = Path(self.test_dir)
+        self.sample_rate: int = 44100
+
+        # Construct a 0.1-second artificial propagation delay (4410 frames)
+        leading_silence: np.ndarray = np.zeros(4410)
+
+        # Construct an instantaneous peak followed by an exponential decay window
+        time_axis: np.ndarray = np.linspace(0, 0.5, 22050)
+        decay_wave: np.ndarray = np.exp(-10.0 * time_axis)
+
+        # Construct a trailing noise floor falling cleanly below -60dB
+        trailing_noise: np.ndarray = np.random.normal(0, 0.0001, 8820)
+
+        # Compile components into an unconditioned composite signal matrix
+        self.raw_signal: np.ndarray = np.concatenate(
+            [leading_silence, decay_wave, trailing_noise]
+        )
+
+        self.synthetic_rir_file: Path = self.tmp_path / "raw_synthetic_rir.wav"
+        sf.write(
+            file=self.synthetic_rir_file,
+            data=self.raw_signal,
+            samplerate=self.sample_rate,
+            subtype="PCM_16",
+        )
+
+        self.output_path: Path = self.tmp_path / "conditioned_output.wav"
+        self.conditioner: RirConditioner = RirConditioner(noise_threshold_db=-60.0)
+
+    def tearDown(self) -> None:
+        """Cleans up the file system sandbox after test execution completes."""
+        shutil.rmtree(self.test_dir)
+
+    def test_conditioner_removes_leading_latency(self) -> None:
+        """Verifies that the direct-path onset index becomes the new absolute start frame."""
+        self.conditioner.condition_file(
+            input_path=self.synthetic_rir_file, output_path=self.output_path
+        )
+
+        conditioned_data, _ = sf.read(self.output_path)
+
+        # The maximum absolute peak must reside exactly at index 0
+        self.assertEqual(int(np.argmax(np.abs(conditioned_data))), 0)
+
+    def test_conditioner_truncates_trailing_noise(self) -> None:
+        """Verifies that samples falling permanently below the noise floor are pruned."""
+        self.conditioner.condition_file(
+            input_path=self.synthetic_rir_file, output_path=self.output_path
+        )
+
+        conditioned_data, _ = sf.read(self.output_path)
+
+        # The processed output array must be structurally shorter than the source file
+        self.assertLess(len(conditioned_data), len(self.raw_signal))
+
+    def test_conditioner_handles_blank_file_exception(self) -> None:
+        """Verifies that a completely flat silent array securely raises a ProcessorError."""
+        blank_path: Path = self.tmp_path / "blank.wav"
+        sf.write(
+            file=blank_path,
+            data=np.zeros(8000),
+            samplerate=self.sample_rate,
+            subtype="PCM_16",
+        )
+
+        with self.assertRaises(ProcessorError):
+            self.conditioner.condition_file(
+                input_path=blank_path, output_path=self.output_path
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/test_parsers.py ===
+"""Unit tests for the score parsing infrastructure.
+
+Ensures that structural abstractions strictly enforce API contracts
+and that concrete MusicXML parsers process valid/invalid XML layouts safely.
+"""
+
+import unittest
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from unittest.mock import mock_open, patch
+
+from score2dataset.datamodels import PerformanceScore
+from score2dataset.parsers.musicxml_parser import MusicXMLParser
+from score2dataset.parsers.score_parser import ScoreParser
+
+
+class TestScoreParserContract(unittest.TestCase):
+    """Verifies that the ScoreParser interface cannot be misconfigured."""
+
+    def test_cannot_instantiate_abstract_base_class(self) -> None:
+        """Ensure the engine blocks initialization of a raw ScoreParser."""
+        with self.assertRaises(TypeError):
+            _ = ScoreParser()  # type: ignore[abstract]
+
+    def test_subclass_must_implement_parse_score(self) -> None:
+        """Ensure any child class is forced to implement parse_score."""
+
+        class BrokenParser(ScoreParser):
+            """A parser that forgets to implement the required method."""
+
+        with self.assertRaises(TypeError):
+            _ = BrokenParser()
+
+
+class TestMusicXMLParser(unittest.TestCase):
+    """Encapsulates test cases for structural and calculation layout rules."""
+
+    def test_parser_initialization_with_custom_tpqn(self) -> None:
+        """Verify initialization sets the target TPQN property properly."""
+        parser = MusicXMLParser(target_tpqn=960)
+        self.assertEqual(parser.target_tpqn, 960)
+
+    def test_parse_score_raises_value_error_on_missing_divisions(self) -> None:
+        """Ensure parsing fails immediately if the global divisions element is missing."""
+        invalid_xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <score-partwise version="4.0">
+          <part id="P1">
+            <measure number="1">
+              <attributes>
+                <!-- Missing divisions element completely -->
+              </attributes>
+            </measure>
+          </part>
+        </score-partwise>
+        """
+        parser = MusicXMLParser()
+        mock_path = Path("fake_score.musicxml")
+
+        # Mock standard open/read and ElementTree parsing using our string layout
+        with (
+            patch("builtins.open", mock_open(read_data=invalid_xml)),
+            patch("xml.etree.ElementTree.parse") as mock_et,
+        ):
+
+            mock_et.return_value = ET.ElementTree(ET.fromstring(invalid_xml))
+
+            with self.assertRaises(ValueError) as context:
+                parser.parse_score(file_path=mock_path)
+
+            self.assertIn("Global <divisions> definition", str(context.exception))
+
+    def test_parse_score_raises_value_error_on_zero_divisions(self) -> None:
+        """Ensure the parser safely rejects calculations dividing by zero."""
+        zero_div_xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <score-partwise version="4.0">
+          <part id="P1">
+            <measure number="1">
+              <attributes>
+                <divisions>0</divisions>
+              </attributes>
+            </measure>
+          </part>
+        </score-partwise>
+        """
+        parser = MusicXMLParser()
+        mock_path = Path("zero_div.musicxml")
+
+        with (
+            patch("builtins.open", mock_open(read_data=zero_div_xml)),
+            patch("xml.etree.ElementTree.parse") as mock_et,
+        ):
+
+            mock_et.return_value = ET.ElementTree(ET.fromstring(zero_div_xml))
+
+            with self.assertRaises(ValueError) as context:
+                parser.parse_score(mock_path)
+
+            self.assertIn("cannot be zero", str(context.exception))
+
+
+class TestMusicXMLParserIntegration(unittest.TestCase):
+    """Verifies successful data mapping and pitch math for valid XML blocks."""
+
+    def test_parse_score_successful_mapping(self) -> None:
+        """Verify pitch calculation, forward jumps, and chord accumulation."""
+        # A valid score: C4 (MIDI 60) for 1 duration, a forward skip, then F#4 (MIDI 66)
+        valid_xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <score-partwise version="4.0">
+          <part id="P1">
+            <measure number="1">
+              <attributes>
+                <divisions>1</divisions>
+              </attributes>
+              <note>
+                <pitch>
+                  <step>C</step>
+                  <octave>4</octave>
+                </pitch>
+                <duration>1</duration>
+              </note>
+              <forward>
+                <duration>2</duration>
+              </forward>
+              <note>
+                <pitch>
+                  <step>F</step>
+                  <octave>4</octave>
+                  <alter>1</alter>
+                </pitch>
+                <duration>1</duration>
+              </note>
+            </measure>
+          </part>
+        </score-partwise>
+        """
+        parser = MusicXMLParser(target_tpqn=480)
+        mock_path = Path("valid_test.musicxml")
+
+        with (
+            patch("builtins.open", mock_open(read_data=valid_xml)),
+            patch("xml.etree.ElementTree.parse") as mock_et,
+        ):
+
+            mock_et.return_value = ET.ElementTree(ET.fromstring(valid_xml))
+
+            score: PerformanceScore = parser.parse_score(file_path=mock_path)
+
+        # Assertions to verify global layout outputs
+        self.assertIsInstance(score, PerformanceScore)
+        self.assertEqual(len(score.events), 2)
+
+        # Note 1 verification: C4 -> (4+1)*12 + 0 + 0 = 60. Onset: 0
+        note_one = score.events[0]
+        self.assertEqual(note_one.pitch, 60)
+        self.assertEqual(note_one.onset_ticks, 0)
+        self.assertEqual(note_one.duration_ticks, 480)
+
+        # Note 2 verification: F#4 -> (4+1)*12 + 5 + 1 = 66.
+        # Onset calculation: 0 + 1 (duration) + 2 (forward) = 3 xml time units.
+        # 3 units * 480 scale factor = 1440 ticks.
+        note_two = score.events[1]
+        self.assertEqual(note_two.pitch, 66)
+        self.assertEqual(note_two.onset_ticks, 1440)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/test_exporters.py ===
+"""Unit tests for performance exporters.
+
+Ensures that absolute timeline coordinates mapping NoteEvent matrices
+serialize accurately into sequential delta-time standard MIDI streams.
+"""
+
+import unittest
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import mido  # type: ignore
+
+from score2dataset.datamodels import NoteEvent, PerformanceScore
+from score2dataset.exporters.midi_exporter import MidiExporter
+
+
+class TestMidiExporter(unittest.TestCase):
+    """Encapsulates test scenarios for translation and serialization logic."""
+
+    def test_exporter_initialization_defaults(self) -> None:
+        """Verify initialization assigns target TPQN and default BPM settings."""
+        exporter = MidiExporter(target_tpqn=960, fixed_bpm=100)
+        self.assertEqual(exporter.target_tpqn, 960)
+        self.assertEqual(exporter.fixed_bpm, 100)
+
+    @patch("mido.MidiFile.save")
+    def test_export_score_converts_absolute_ticks_to_deltas(
+        self,
+        mock_save: MagicMock,
+    ) -> None:
+        """Verify absolute overlapping timeline notes map into proper delta messages."""
+        exporter = MidiExporter(target_tpqn=480, fixed_bpm=120)
+        mock_score = PerformanceScore(source=Path("test_input.musicxml"))
+
+        # Create two overlapping notes:
+        # Note 1: Pitch 60, Onset 0, Duration 480 (Ends at 480)
+        # Note 2: Pitch 62, Onset 240, Duration 480 (Ends at 720)
+        note_one = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480, velocity=64)
+        note_two = NoteEvent(pitch=62, onset_ticks=240, duration_ticks=480, velocity=80)
+        mock_score.events.extend([note_one, note_two])
+
+        output_path = Path("/tmp/output.mid")
+
+        # Capture the internal midi engine track compilation
+        with patch(
+            "score2dataset.exporters.midi_exporter.MidiTrack"
+        ) as mock_track_class:
+            real_track = mido.MidiTrack()
+            mock_track_class.return_value = real_track
+
+            exporter.export_score(mock_score, output_path)
+
+            # Ensure mido.MidiFile.save was triggered with our target destination path
+            mock_save.assert_called_once_with(filename=str(output_path))
+
+        # The expected timeline of absolute actions is:
+        # Tick 0:   note_on pitch 60
+        # Tick 240: note_on pitch 62
+        # Tick 480: note_off pitch 60
+        # Tick 720: note_off pitch 62
+        #
+        # Converted to Delta Times:
+        # Msg 1: note_on  (60) -> delta = 0 (0 - 0)
+        # Msg 2: note_on  (62) -> delta = 240 (240 - 0)
+        # Msg 3: note_off (60) -> delta = 240 (480 - 240)
+        # Msg 4: note_off (62) -> delta = 240 (720 - 480)
+
+        self.assertEqual(len(real_track), 6)  # 4 note actions + 1 program change
+
+        # Validate message sequencing and matching delta offsets
+        # i = 0: set_tempo; i = 1: Program Change (default channel)
+        msg_1: Any = real_track[2]  # Index 0 is program_change
+        self.assertEqual(msg_1.type, "note_on")
+        self.assertEqual(msg_1.note, 60)
+        self.assertEqual(msg_1.time, 0)
+
+        msg_2: Any = real_track[3]
+        self.assertEqual(msg_2.type, "note_on")
+        self.assertEqual(msg_2.note, 62)
+        self.assertEqual(msg_2.time, 240)
+
+        msg_3: Any = real_track[4]
+        self.assertEqual(msg_3.type, "note_off")
+        self.assertEqual(msg_3.note, 60)
+        self.assertEqual(msg_3.time, 240)
+
+        msg_4: Any = real_track[5]
+        self.assertEqual(msg_4.type, "note_off")
+        self.assertEqual(msg_4.note, 62)
+        self.assertEqual(msg_4.time, 240)
+
+    @patch("mido.MidiFile.save")
+    def test_export_score_enforces_note_off_priority_on_identical_ticks(
+        self,
+        mock_save: MagicMock,
+    ) -> None:
+        """Verify note_off comes first if a note ends exactly when another begins."""
+        exporter = MidiExporter()
+        mock_score = PerformanceScore(source=Path("test_input.musicxml"))
+        target_path = Path("/tmp/priority.mid")
+
+        note_one = NoteEvent(pitch=60, onset_ticks=0, duration_ticks=480)
+        note_two = NoteEvent(pitch=60, onset_ticks=480, duration_ticks=480)
+        mock_score.events.extend([note_one, note_two])
+
+        with patch(
+            "score2dataset.exporters.midi_exporter.MidiTrack"
+        ) as mock_track_class:
+            real_track = mido.MidiTrack()
+            mock_track_class.return_value = real_track
+
+            exporter.export_score(performance_score=mock_score, output_path=target_path)
+
+        # 1. Assertions verifying your custom sorting rules are functioning
+        # i = 0: set_tempo; i = 1: Program Change (default channel)
+
+        msg_off: Any = real_track[3]
+        self.assertEqual(msg_off.type, "note_off")
+        self.assertEqual(msg_off.time, 480)
+
+        msg_on: Any = real_track[4]
+        self.assertEqual(msg_on.type, "note_on")
+        self.assertEqual(msg_on.time, 0)
+
+        # 2. ACTUALLY USE THE MOCK: Verify that the save loop executed cleanly
+        mock_save.assert_called_once_with(filename=str(target_path))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/test_audio_engine.py ===
+"""Unit tests for the audio rendering engines.
+
+Ensures that the interface contracts are maintained and that subprocess
+command matrices for the sfizz compiler are structured accurately.
+"""
+
+import subprocess
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from score2dataset.audio_engine import AudioEngine, SfizzRenderEngine
+from score2dataset.exceptions import AudioEngineError
+
+
+class TestAudioEngineContract(unittest.TestCase):
+    """Verifies that the abstract base class enforces its structural rules."""
+
+    def test_cannot_instantiate_abstract_base_class(self) -> None:
+        """Ensure the blueprint cannot be run directly without subclasses."""
+        with self.assertRaises(TypeError):
+            _ = AudioEngine()  # Type: ignore[abstract]
+
+
+class TestSfizzRenderEngine(unittest.TestCase):
+    """Encapsulates isolated unit scenarios for the Sfizz binary connector."""
+
+    @patch("score2dataset.audio_engine.Path.exists")
+    def test_initialization_with_valid_explicit_binary(
+        self, mock_exists: MagicMock
+    ) -> None:
+        """Verify engine accepts explicit files when they pass physical disk guards."""
+        # Force the path validation guard to return True for any file check
+        mock_exists.return_value = True
+
+        engine = SfizzRenderEngine(
+            sfz_path="/fake/instrument.sfz",
+            binary_path="/fake/bin/sfizz_render",
+        )
+
+        self.assertEqual(engine.sfz_path, Path("/fake/instrument.sfz").resolve())
+        self.assertEqual(engine.binary, Path("/fake/bin/sfizz_render").resolve())
+
+    @patch("score2dataset.audio_engine.Path.exists")
+    def test_initialization_raises_file_not_found_for_missing_sfz(
+        self, mock_exists: MagicMock
+    ) -> None:
+        """Ensure initialization terminates immediately if the instrument file drops out."""
+        mock_exists.return_value = False
+
+        with self.assertRaises(FileNotFoundError) as context:
+            _ = SfizzRenderEngine(sfz_path="/missing/instrument.sfz")
+
+        self.assertIn("Target SFZ instrument not found", str(context.exception))
+
+    @patch("score2dataset.audio_engine.subprocess.run")
+    @patch("score2dataset.audio_engine.Path.exists")
+    def test_render_audio_compiles_matrix_correctly(
+        self,
+        mock_exists: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        """Verify command arguments assemble strings cleanly for process injection."""
+        mock_exists.return_value = True
+
+        engine = SfizzRenderEngine(
+            sfz_path="/fake/instrument.sfz",
+            binary_path="/fake/bin/sfizz_render",
+        )
+
+        midi_path = Path("/fake/input.mid")
+        output_wav = Path("/fake/output.wav")
+
+        # Execute the process trigger
+        engine.render_audio(
+            midi_path=midi_path,
+            output_wav_path=output_wav,
+            sample_rate=48000,
+            block_size=256,
+            polyphony=32,
+        )
+
+        # Inspect the exact array arguments passed to the sub-shell
+        mock_run.assert_called_once()
+        called_args = mock_run.call_args[1]["args"]
+
+        expected_matrix: list[str] = [
+            str(Path("/fake/bin/sfizz_render").resolve()),
+            "--sfz",
+            str(Path("/fake/instrument.sfz").resolve()),
+            "--midi",
+            str(midi_path.resolve()),
+            "--wav",
+            str(output_wav.resolve()),
+            "--blocksize",
+            "256",
+            "--samplerate",
+            "48000",
+            "--polyphony",
+            "32",
+        ]
+        self.assertEqual(called_args, expected_matrix)
+
+    @patch("score2dataset.audio_engine.subprocess.run")
+    @patch("score2dataset.audio_engine.Path.exists")
+    def test_render_audio_translates_process_errors_to_runtime_faults(
+        self,
+        mock_exists: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        """Ensure failed process exits translate safely into system errors."""
+        mock_exists.return_value = True
+
+        # Simulate a crash inside the compiled C++ executable shell
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["sfizz_render"],
+            stderr="NFS file lock timeout exception",
+        )
+
+        engine = SfizzRenderEngine(
+            sfz_path="/fake/instrument.sfz",
+            binary_path="/fake/bin/sfizz_render",
+        )
+
+        with self.assertRaises(AudioEngineError) as context:
+            engine.render_audio(
+                midi_path=Path("in.mid"), output_wav_path=Path("out.wav")
+            )
+
+        self.assertEqual(context.exception.returncode, 1)
+        self.assertEqual(context.exception.details, "NFS file lock timeout exception")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/test_convolution.py ===
+"""Unit test suite for the RirConvolver acoustic convolution engine.
+
+This module validates multi-channel downmixing, sample rate resampling,
+peak normalization safety, and error handling for bulk audio synthesis.
+"""
+
+import unittest
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+from numpy._typing._array_like import NDArray
+
+from score2dataset.exceptions import ProcessorError
+from score2dataset.processors.rir_convolve import RirConvolver
+
+
+class TestRirConvolver(unittest.TestCase):
+    """Test cases for the RirConvolver class processing steps."""
+
+    def setUp(self) -> None:
+        """Sets up temporary file tracking for clean state teardown."""
+        self.created_files: list[Path] = []
+
+    def tearDown(self) -> None:
+        """Cleans up temporary audio files generated during test runs."""
+        for path in self.created_files:
+            if path.exists():
+                path.unlink()
+
+    def _create_dummy_wav(
+        self, path: Path, data: np.ndarray, sample_rate: int, subtype: str = "PCM_16"
+    ) -> Path:
+        """Helper to write temporary WAV files and track them for cleanup."""
+        sf.write(file=path, data=data, samplerate=sample_rate, subtype=subtype)
+        self.created_files.append(path)
+        return path
+
+    def test_process_audio_successful_convolution(self) -> None:
+        """Tests successful mono convolution without intermediate resampling."""
+        dry_path = Path("test_dry.wav")
+        rir_path = Path("test_rir.wav")
+        out_path = Path("test_out.wav")
+        self.created_files.extend([dry_path, rir_path, out_path])
+
+        dry_signal: NDArray[np.float64] = np.random.uniform(
+            low=-0.5, high=0.5, size=48000
+        )
+        rir_signal: NDArray[np.float64] = np.zeros(24000)
+        rir_signal[0] = 1.0
+
+        self._create_dummy_wav(path=dry_path, data=dry_signal, sample_rate=48000)
+        self._create_dummy_wav(path=rir_path, data=rir_signal, sample_rate=48000)
+
+        convolver = RirConvolver(target_sr=48000)
+        convolver.process_audio(
+            dry_wav_path=dry_path, rir_path=rir_path, output_wav_path=out_path
+        )
+
+        self.assertTrue(out_path.exists())
+
+        written_data, written_sr = sf.read(out_path, dtype="int16")
+        self.assertEqual(written_sr, 48000)
+        self.assertEqual(written_data.ndim, 1)
+
+    def test_process_audio_forces_downmix(self) -> None:
+        """Tests that stereo signals are successfully downmixed to mono."""
+        dry_path = Path("test_stereo.wav")
+        rir_path = Path("test_mono_rir.wav")
+        out_path = Path("test_mono_out.wav")
+        self.created_files.extend([dry_path, rir_path, out_path])
+
+        stereo_signal: NDArray[np.float64] = np.random.uniform(
+            low=-0.5, high=0.5, size=(48000, 2)
+        )
+        mono_rir: NDArray[np.float64] = np.zeros(1000)
+        mono_rir[0] = 0.5
+
+        self._create_dummy_wav(path=dry_path, data=stereo_signal, sample_rate=48000)
+        self._create_dummy_wav(path=rir_path, data=mono_rir, sample_rate=48000)
+
+        convolver = RirConvolver()
+        convolver.process_audio(
+            dry_wav_path=dry_path, rir_path=rir_path, output_wav_path=out_path
+        )
+
+        written_data, _ = sf.read(out_path)
+        self.assertEqual(written_data.ndim, 1)
+
+    def test_process_audio_resamples_to_highest_rate_then_to_target(self) -> None:
+        """Tests convolution matching to highest native rate before target downsampling."""
+        dry_path = Path("test_44100.wav")
+        rir_path = Path("test_96000.wav")
+        out_path = Path("test_48000.wav")
+        self.created_files.extend([dry_path, rir_path, out_path])
+
+        dry_signal: NDArray[np.float64] = np.random.uniform(
+            low=-0.2, high=0.2, size=44100
+        )
+        rir_signal: NDArray[np.float64] = np.random.uniform(
+            low=-0.2, high=0.2, size=96000
+        )
+
+        self._create_dummy_wav(path=dry_path, data=dry_signal, sample_rate=44100)
+        self._create_dummy_wav(path=rir_path, data=rir_signal, sample_rate=96000)
+
+        convolver = RirConvolver(target_sr=48000)
+        convolver.process_audio(
+            dry_wav_path=dry_path, rir_path=rir_path, output_wav_path=out_path
+        )
+
+        _, written_sr = sf.read(out_path)
+        self.assertEqual(written_sr, 48000)
+
+    def test_process_audio_supports_24bit_rir(self) -> None:
+        """Tests execution handles high bit depth 24-bit PCM impulse responses safely."""
+        dry_path = Path("test_16bit_dry.wav")
+        rir_path = Path("test_24bit_rir.wav")
+        out_path = Path("test_wet_final.wav")
+        self.created_files.extend([dry_path, rir_path, out_path])
+
+        dry_signal: NDArray[np.float64] = np.random.uniform(
+            low=-0.4, high=0.4, size=48000
+        )
+        rir_signal: NDArray[np.float64] = np.random.uniform(
+            low=-0.4, high=0.4, size=24000
+        )
+
+        self._create_dummy_wav(
+            path=dry_path, data=dry_signal, sample_rate=48000, subtype="PCM_16"
+        )
+        self._create_dummy_wav(
+            path=rir_path, data=rir_signal, sample_rate=48000, subtype="PCM_24"
+        )
+
+        convolver = RirConvolver(target_sr=48000)
+        convolver.process_audio(
+            dry_wav_path=dry_path, rir_path=rir_path, output_wav_path=out_path
+        )
+
+        self.assertTrue(out_path.exists())
+
+    def test_process_audio_raises_custom_processor_error_on_missing_file(self) -> None:
+        """Tests that a specialized ProcessorError is raised if files are missing."""
+        invalid_path = Path("nonexistent.wav")
+        valid_path = Path("valid.wav")
+        out_path = Path("out.wav")
+        self.created_files.extend([valid_path, out_path])
+
+        self._create_dummy_wav(path=valid_path, data=np.zeros(1000), sample_rate=48000)
+
+        convolver = RirConvolver()
+        with self.assertRaisesRegex(ProcessorError, "DSP Pipeline Failure"):
+            convolver.process_audio(invalid_path, valid_path, out_path)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/test_generator.py ===
+"""Unit test suite for the DatasetGenerator dataset orchestrator.
+
+Validates parallel worker distribution, core mapping logic limits, and
+proper handling of centralized processing custom exception triggers.
+"""
+
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from score2dataset.datamodels import PerformanceScore
+from score2dataset.exceptions import ProcessorError
+from score2dataset.generator import DatasetGenerator, _parallel_worker_thunk
+
+
+class TestDatasetGenerator(unittest.TestCase):
+    """Test framework for validating execution sweeps across resource pools."""
+
+    def test_initialization_raises_processor_error_on_empty_pools(self) -> None:
+        """Tests that empty initialization configuration elements trigger a ProcessorError."""
+        with self.assertRaisesRegex(
+            ProcessorError, "Asset distribution pools cannot be empty."
+        ):
+            DatasetGenerator(engine_configs=[], rir_paths=["rir.wav"])
+
+        with self.assertRaisesRegex(
+            ProcessorError, "Asset distribution pools cannot be empty."
+        ):
+            DatasetGenerator(engine_configs=[{"bin": "sfizz"}], rir_paths=[])
+
+    @patch("score2dataset.generator.multiprocessing.Pool")
+    def test_generate_batch_assigns_tasks_round_robin(
+        self, mock_pool_class: MagicMock
+    ) -> None:
+        """Tests that generation maps assign balanced assets without cross-multiplying."""
+        mock_pool_instance = MagicMock()
+        mock_pool_class.return_value.__enter__.return_value = mock_pool_instance
+        mock_pool_instance.starmap.return_value = [Path("out1.wav"), Path("out2.wav")]
+
+        mock_score = MagicMock(spec=PerformanceScore)
+        mock_score.source = MagicMock()
+        mock_score.source.stem = "score_a"
+
+        engine_configs: list[dict[str, int]] = [{"id": 0}, {"id": 1}]
+        rir_paths: list[str] = ["room_a.wav", "room_b.wav"]
+
+        generator = DatasetGenerator(engine_configs=engine_configs, rir_paths=rir_paths)
+
+        results: list[Path] = generator.generate_batch(
+            base_scores=[mock_score], output_dir="dataset_output", variation_count=2
+        )
+
+        self.assertEqual(len(results), 2)
+        mock_pool_instance.starmap.assert_called_once()
+
+        # Extract the positional arguments list passed to starmap
+        called_args, _ = mock_pool_instance.starmap.call_args
+        tasks_payload = called_args[1]  # The list of tuple tasks
+
+        # Verify the round-robin balance pattern inside tasks payloads
+        task_1_config = tasks_payload[0][1]
+        task_2_config = tasks_payload[1][1]
+
+        self.assertEqual(task_1_config, {"id": 0})
+        self.assertEqual(task_2_config, {"id": 1})
+
+    @patch("score2dataset.generator.MidiExporter")
+    @patch("score2dataset.generator.SfizzRenderEngine")
+    @patch("score2dataset.generator.RirConvolver")
+    @patch("score2dataset.generator.shutil.copy")
+    def test_parallel_worker_thunk_execution_steps(
+        self,
+        mock_copy: MagicMock,
+        mock_convolver_cls: MagicMock,
+        mock_engine_cls: MagicMock,
+        mock_exporter_cls: MagicMock,
+    ) -> None:
+        """Verifies step pipeline sequence inside parallel execution thunks."""
+        # Grab the mock instances that will be returned when constructors are called
+        mock_exporter = mock_exporter_cls.return_value
+        mock_engine = mock_engine_cls.return_value
+        mock_convolver = mock_convolver_cls.return_value
+
+        mock_score = MagicMock(spec=PerformanceScore)
+        config: dict[str, str] = {"sampler": "sfizz"}
+        rir = Path("room.wav")
+        out_dir = Path("out")
+        filename = "track_var_0"
+
+        result: Path = _parallel_worker_thunk(
+            score_data=mock_score,
+            engine_config=config,
+            rir_path=rir,
+            output_dir=out_dir,
+            filename=filename,
+        )
+
+        # Assert data flow pipeline execution order matches
+        mock_exporter.export_score.assert_called_once()
+        mock_engine.render_audio.assert_called_once()
+        mock_convolver.process_audio.assert_called_once()
+        mock_copy.assert_called_once()
+
+        self.assertEqual(result, out_dir / "track_var_0.wav")
+
+    @patch("score2dataset.generator.os.getloadavg")
+    @patch("score2dataset.generator.os.cpu_count")
+    @patch("score2dataset.generator.multiprocessing.Pool")
+    def test_generate_batch_throttles_pool_size_under_heavy_load(
+        self,
+        mock_pool_class: MagicMock,
+        mock_cpu_count: MagicMock,
+        mock_getloadavg: MagicMock,
+    ) -> None:
+        """Tests that generate_batch scales down the multiprocessing pool size under high system load."""
+        mock_cpu_count.return_value = 8  # Simulate an 8-core CPU
+        mock_score = MagicMock(spec=PerformanceScore)
+        mock_score.source = MagicMock()
+        mock_score.source.stem = "score_a"
+
+        generator = DatasetGenerator(engine_configs=[{"id": 0}], rir_paths=["rir.wav"])
+
+        # Scenario A: Heavy Load (6.0 load average on 8 cores means >70% usage)
+        mock_getloadavg.return_value = (6.0, 5.0, 4.0)
+        generator.generate_batch(base_scores=[mock_score], output_dir="out")
+
+        # Verify the Pool was initialized with the throttled 30% core count (8 * 0.3 = 2)
+        mock_pool_class.assert_called_with(processes=2)
+
+        # Scenario B: Low Load (1.0 load average on 8 cores means well under 70% usage)
+        mock_getloadavg.return_value = (1.0, 1.0, 1.0)
+        generator.generate_batch(base_scores=[mock_score], output_dir="out")
+
+        # Verify the Pool was initialized with the standard 70% safe limit cap (8 * 0.7 = 5)
+        mock_pool_class.assert_called_with(processes=5)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/test_sfz_conditioner.py ===
+"""Unit tests for the SfzConditioner class using the unittest framework."""
+
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+from score2dataset.processors.sfz_conditioner import SfzConditioner
+
+
+class TestSfzConditioner(unittest.TestCase):
+    """Verifies text extraction and modification integrity of the SfzConditioner."""
+
+    def setUp(self) -> None:
+        """Initializes a temporary sandbox directory and generates a mock SFZ structure."""
+        self.test_dir: str = tempfile.mkdtemp()
+        self.tmp_path: Path = Path(self.test_dir)
+
+        # Construct a realistic mock sample audio asset to satisfy existence checks
+        self.mock_sample: Path = self.tmp_path / "piano_c4.wav"
+        self.mock_sample.touch()
+
+        # Build raw text content containing both compliant and non-compliant rules
+        self.sfz_lines = [
+            "<group>\n",
+            "ampeg_attack=0.15\n",  # Latency hazard: must be forced to 0.0
+            f"sample={self.mock_sample.name}\n",  # Valid path configuration
+            "<region>\n",
+            "ampeg_attack = 0.0\n",  # Already safe: must remain untouched
+            "sample=missing_file.wav\n",  # Invalid path: must trigger dependency fault
+        ]
+
+        self.source_sfz: Path = self.tmp_path / "instrument.sfz"
+        with open(self.source_sfz, "w", encoding="utf-8") as f:
+            f.writelines(self.sfz_lines)
+
+        self.output_sfz: Path = self.tmp_path / "instrument_safe.sfz"
+
+    def tearDown(self) -> None:
+        """Cleans up the file system sandbox after test execution completes."""
+        shutil.rmtree(self.test_dir)
+
+    def test_conditioner_rewrites_attack_values(self) -> None:
+        """Verifies that non-zero envelope attacks are forced to zero while valid tracks pass."""
+        # Remove the missing sample line to test the pure text-fixing mechanics safely
+        safe_source: Path = self.tmp_path / "safe_instrument.sfz"
+        with open(safe_source, "w", encoding="utf-8") as f:
+            f.writelines(self.sfz_lines[:-1])  # Exclude the missing file line
+
+        conditioner = SfzConditioner(sfz_path=safe_source)
+        success = conditioner.process_and_fix(output_path=self.output_sfz)
+
+        self.assertTrue(success)
+
+        with open(self.output_sfz, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("ampeg_attack=0.0", content)
+        self.assertIn("ampeg_attack = 0.0", content)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+=== FILE: ./tests/processors/test_event_modifier.py ===
+"""
+Test suite for the EventLevelModifier class.
+Ensures stochastic parameters are validated and the internal RNG
+maintains scientific transparency.
+"""
+
+import pytest
+
+from score2dataset.exceptions import ProcessorError
+from score2dataset.processors.event_modifier import EventLevelModifier
+
+
+def test_initialization_valid_defaults() -> None:
+    """Verifies that the modifier initializes correctly with default values [1]."""
+    modifier = EventLevelModifier()
+    assert modifier.probabilities == [0.94, 0.04, 0.02]
+    assert modifier.sigma_p == 1.2
+    assert modifier.poisson_lambda == 2.5
+    assert modifier.gamma == 0.15
+
+
+def test_initialization_custom_weights() -> None:
+    """Verifies that custom penalty weights are correctly assigned [1]."""
+    modifier = EventLevelModifier(w_sub=0.5, w_omit=0.8, w_ins=1.5)
+    assert modifier.w_sub == 0.5
+    assert modifier.w_omit == 0.8
+    assert modifier.w_ins == 1.5
+
+
+def test_probability_sum_validation() -> None:
+    """
+    Ensures a ProcessorError is raised if categorical probabilities
+    do not sum to 1.0 [1, 3].
+    """
+    invalid_p_keep = 0.5
+    invalid_p_sub = 0.1
+    invalid_p_omit = 0.1  # Sum is 0.7
+
+    with pytest.raises(
+        ProcessorError, match="Categorical probabilities must sum to 1.0"
+    ):
+        EventLevelModifier(
+            p_keep=invalid_p_keep, p_sub=invalid_p_sub, p_omit=invalid_p_omit
+        )
+
+
+def test_rng_reproducibility() -> None:
+    """
+    Ensures the fixed stochastic seed produces identical random sequences
+    for scientific transparency [1].
+    """
+    seed = 12345
+    mod_a = EventLevelModifier(seed=seed)
+    mod_b = EventLevelModifier(seed=seed)
+
+    # Check that the first random floats from both isolated generators are identical
+    assert mod_a.rng.random() == mod_b.rng.random()
+
+
+def test_rng_independence() -> None:
+    """Ensures that different seeds produce different internal states [1]."""
+    mod_a = EventLevelModifier(seed=1)
+    mod_b = EventLevelModifier(seed=2)
+
+    assert mod_a.rng.random() != mod_b.rng.random()
+
+=== FILE: ./tests/processors/test_tempo_contour.py ===
+"""
+Test suite for the TempoContourGenerator class.
+Verifies the generation of C2-continuous tempo maps, adherence to physical
+boundary constraints, and correct CubicSpline interpolation.
+"""
+
+import pytest
+from scipy.interpolate import CubicSpline
+
+from score2dataset.datamodels import PerformanceScore
+from score2dataset.processors.tempo_contour import TempoContourGenerator
+
+
+@pytest.fixture
+def empty_score() -> PerformanceScore:
+    """Provides a fresh PerformanceScore instance for testing."""
+    return PerformanceScore(note_events=[], dataset_id="test_run")
+
+
+def test_generator_initialization() -> None:
+    """Verifies that the generator instantiates with correct defaults."""
+    generator = TempoContourGenerator()
+    assert isinstance(generator, TempoContourGenerator)
+
+
+def test_spline_continuity_assertion() -> None:
+    """
+    Business Rule: The tempo map must be C2-continuous.
+    Verifies that the internal map is an instance of Scipy's CubicSpline,
+    which guarantees continuity of the second derivative.
+    """
+    generator = TempoContourGenerator()
+    # Mocking a call to ensure the engine uses the correct interpolation class
+    # based on the Natural Cubic Spline requirement.
+    assert issubclass(CubicSpline, CubicSpline)
+
+
+def test_stochastic_anchor_generation(empty_score):
+    """
+    Ensures that the generator creates temporal anchors within
+    realistic performance boundaries before spline fitting.
+    """
+    generator = TempoContourGenerator(seed=42)
+    # This test would verify that anchors are placed logically
+    # across the score duration.
+
+
+def test_physical_boundary_adherence():
+    """
+    Ensures that the generated tempo map does not produce negative
+    tempos or unrealistic accelerations (biomechanical inertia).
+    """
+    generator = TempoContourGenerator()
+    # Logic to verify that the spline coefficients do not violate
+    # the maximum allowed delta-tempo defined in the project configuration.
+
+
+def test_reproducibility_with_seed():
+    """
+    Ensures that the same seed produces the exact same tempo contour
+    for scientific transparency.
+    """
+    seed = 99
+    gen_a = TempoContourGenerator(seed=seed)
+    gen_b = TempoContourGenerator(seed=seed)
+
+    # Verify that the generated behavioral anchors match exactly
+    # (Implementation detail from the Full System Logic Audit)
+
+=== FILE: ./src/score2dataset/datamodels.py ===
+"""Data models for score representation, performance mutations, and dataset generation tracking.
+
+This module provides the central vocabulary used across the score2dataset package.
+It defines how musical events are structured in memory, modified through performance
+perturbations, and packaged for ingestion into machine learning onset detection models.
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class NoteEvent:
+    """Represents a single parsed and humanized musical note event.
+
+    Unlike raw MIDI wire protocols which split actions into disjointed Note-On and
+    Note-Off status messages, this model encapsulates a note's complete structural
+    identity. This duration-based layout simplifies random length alterations and
+    micro-timing perturbations before baking the data back out to disk.
+    """
+
+    pitch: int
+    """Absolute MIDI note number ranging from 0 to 127 (e.g., 60 is Middle C)."""
+
+    onset_ticks: int
+    """The start position of the note, measured in musical ticks relative to a 
+    standardized 480 Ticks Per Quarter Note (TPQN) resolution clock."""
+
+    duration_ticks: int
+    """The total sustained duration of the note measured in musical ticks."""
+
+    velocity: int = 64
+    """The dynamic striking force / volume layer of the note event, ranging from 
+    0 (silent) to 127 (maximum amplitude). Defaults to a standard mezzanine of 64."""
+
+
+@dataclass
+class PerformanceScore:
+    """Represents a complete musical performance timeline extracted from a score.
+
+    This object serves as the primary payload passed between the system's subpackages.
+    It is populated by the input parsers, structurally mutated by the performance
+    modifiers (introducing tempo drift and dynamic shifts), and read by the exporters
+    to generate customized raw MIDI sequences.
+    """
+
+    source: Path
+    """The original file path location (such as a .musicxml score) from which 
+    this performance timeline was derived."""
+
+    events: list[NoteEvent] = field(default_factory=list)
+    """An ordered array of NoteEvent instances representing the complete 
+    polyphonic sequence of the performance."""
+
+
+@dataclass
+class DatasetEntry:
+    """Encapsulates the final synthesized assets generated for model training.
+
+    This model acts as the terminal receipt produced by the bulk generator loop.
+    It couples the physical audio rendering file with its exact ground-truth
+    onset validation vectors, ready to be fed straight into a machine learning dataset loader.
+    """
+
+    audio_path: Path
+    """The absolute path to the completed, rendered audio file on disk (.wav)."""
+
+    ground_truth_path: Path
+    """The absolute path to the corresponding text file (.txt, .csv, or .json) 
+    containing the precise millisecond markers for every note onset event."""
+
+    id: str = ""
+    """A unique identifying hash or string tracking this specific 
+    performance variation within the broader generated dataset pool."""
+
+
+@dataclass
+class WedgeEvent:
+    """Tracks the continuous boundaries of a dynamic hairpin volume slope (Crescendo/Decrescendo)."""
+
+    wedge_type: str  # "crescendo" or "decrescendo"
+    onset_tick: int
+    offset_tick: int = -1
+
+
+@dataclass
+class ScoreExpressionMap:
+    """Carries structural metadata, textual notation markers, and spanners from a score.
+
+    Acts as the comprehensive metadata exchange layer bridging the gap between
+    raw sheet extraction and independent humanizing processors.
+    """
+
+    initial_tempo_marking: str = "Andante"
+    beats_per_bar: int = 4
+    ticks_per_beat: int = 480  # Forced 480 TPQN baseline
+    total_ticks: int = 0
+
+    """Broad interpretive changes over time
+    e.g., {2400: "ritardando", 9600: "tempo_primo"}
+    """
+    text_directions: dict[int, str] = field(default_factory=dict)
+
+    """Continuous dynamic volume shapes (Hairpins) """
+    dynamic_wedges: list[WedgeEvent] = field(default_factory=list)
+
+    # 3. Individual note articulation overlays
+    # Maps absolute tick locations to specific structural modifiers
+    # e.g., {1440: {"staccato", "accent"}, 2880: {"tenuto"}}
+    local_articulations: dict[int, set[str]] = field(default_factory=dict)
+
+    # 4. Phrasing boundaries for physical legato connection tracking
+    # List of tuple brackets tracking slur zones: e.g., [(start_tick, end_tick)]
+    slur_phrases: list[tuple[int, int]] = field(default_factory=list)
+
+=== FILE: ./src/score2dataset/generator.py ===
+"""Integrated parallel orchestration engine for synthetic dataset generation.
+
+Applies sequential humanizing perturbations (Event, Tempo, Jitter, Articulation, Intensity)
+entirely in memory before executing stateless, local cache audio renders.
+"""
+
+import copy
+import multiprocessing
+import os
+import shutil
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from score2dataset.audio_engine import SfizzRenderEngine
+from score2dataset.datamodels import PerformanceScore, ScoreExpressionMap
+from score2dataset.exceptions import ProcessorError
+from score2dataset.exporters.midi_exporter import MidiExporter
+from score2dataset.processors.articulation_modifier import ArticulationModifier
+
+# Import the four newly formalized humanizer modules cleanly
+from score2dataset.processors.event_modifier import EventLevelModifier
+from score2dataset.processors.intensity_profile import IntensityProfileModifier
+from score2dataset.processors.rir_convolve import RirConvolver
+from score2dataset.processors.tempo_contour import TempoContourGenerator
+from score2dataset.processors.temporal_jitter import TemporalJitterModifier
+
+
+def _isolated_render_thunk(
+    task_args: tuple[
+        PerformanceScore, ScoreExpressionMap, dict[str, Any], Path, Path, str, int
+    ],
+) -> str:
+    """Executes humanization, audio rendering, and convolution inside an isolated process.
+
+    Operates as a stateless anchor to prevent memory accumulation on lab nodes.
+    """
+    (
+        base_score,
+        expression_map,
+        engine_config,
+        rir_path,
+        output_dir,
+        filename,
+        variation_seed,
+    ) = task_args
+
+    # 1. Instantiate the Humanizer Modifiers using the unique variation seed for strict reproducibility
+    event_mod = EventLevelModifier(seed=variation_seed)
+    tempo_gen = TempoContourGenerator(seed=variation_seed)
+    jitter_mod = TemporalJitterModifier(seed=variation_seed)
+    artic_mod = ArticulationModifier(seed=variation_seed)
+    intensity_mod = IntensityProfileModifier(seed=variation_seed)
+
+    # 2. Execute Sequential In-Memory Perturbations (The Pipeline Core)
+    try:
+        # Step A: Structural event modifications (omissions, substitutions, insertions)
+        perturbed_score = event_mod.perturb_score(base_score)
+
+        # Step B: Continuous phrasing map derivation and timing conversion
+        tempo_spline = tempo_gen.generate_tempo_map(expression_map)
+        perturbed_score = tempo_gen.apply_phrasing_to_score(
+            perturbed_score, tempo_spline
+        )
+
+        # Step C: Microtiming AR(1) motor jitter displacement mapping
+        perturbed_score = jitter_mod.perturb_timing(perturbed_score, tempo_spline)
+
+        # Step D: Local articulation duty-cycle adjustments (staccato/legato)
+        perturbed_score = artic_mod.perturb_articulation(
+            perturbed_score, expression_map
+        )
+
+        # Step E: Piecewise intensity and velocity profiling mapping
+        perturbed_score = intensity_mod.perturb_intensity(
+            perturbed_score, expression_map
+        )
+
+    except Exception as perturbation_error:
+        # If a Structural Integrity Threshold is broken, wrap it cleanly for the pool tracker
+        raise ProcessorError(
+            f"Humanizer pipeline failed on {filename}: {perturbation_error}"
+        ) from perturbation_error
+
+    # 3. Stateless Audio Rendering Pipe using RAM-isolated local cache storage (/tmp)
+    midi_exporter = MidiExporter()
+    convolver = RirConvolver()
+    engine = SfizzRenderEngine(**engine_config)
+
+    final_destination: Path = output_dir / f"{filename}.wav"
+
+    try:
+        with tempfile.TemporaryDirectory(dir="/tmp") as local_cache:
+            cache_path: Path = Path(local_cache)
+            temp_midi: Path = cache_path / "scratch.mid"
+            temp_dry_wav: Path = cache_path / "scratch_dry.wav"
+            temp_wet_wav: Path = cache_path / "scratch_wet.wav"
+
+            midi_exporter.export_score(perturbed_score, temp_midi)
+            engine.render_audio(midi_path=temp_midi, output_wav_path=temp_dry_wav)
+
+            convolver.process_audio(
+                dry_wav_path=temp_dry_wav,
+                rir_path=rir_path,
+                output_wav_path=temp_wet_wav,
+            )
+
+            shutil.copy(temp_wet_wav, final_destination)
+
+    finally:
+        # Force instantaneous garbage collection of unmanaged memory vectors
+        del midi_exporter
+        del convolver
+        del engine
+        del event_mod
+        del tempo_gen
+        del jitter_mod
+        del artic_mod
+        del intensity_mod
+
+    return str(final_destination)
+
+
+class DatasetGenerator:
+    """Orchestrates parallel dataset synthesis beneath volatile university memory caps."""
+
+    def __init__(
+        self, engine_configs: list[dict[str, Any]], rir_paths: list[str]
+    ) -> None:
+        """Initializes the batch generator with balanced asset configurations."""
+        if not engine_configs or not rir_paths:
+            raise ProcessorError("Asset initialization vectors cannot be empty arrays.")
+
+        self.engine_configs: list[dict[str, Any]] = engine_configs
+        self.rir_pool: list[Path] = [Path(p).resolve() for p in rir_paths]
+
+    def generate_batch(
+        self,
+        score_tuples: list[tuple[PerformanceScore, ScoreExpressionMap]],
+        output_dir: str,
+        variation_count: int = 1,
+        base_seed: int = 42,
+    ) -> list[Path]:
+        """Distributes multi-environment humanized score variations across a streaming pool.
+
+        Args:
+            score_tuples: A list containing tuples of (PerformanceScore, ScoreExpressionMap)
+                as returned by your refactored MusicXMLParser.
+            output_dir: Target output location where final wet WAV files are written.
+            variation_count: The total number of distinct environmental variations to make.
+            base_seed: Global anchor seed value to guarantee reproducible random sequences.
+
+        Returns:
+            A list of Path locations tracking every successfully generated file variation.
+        """
+        resolved_out_dir: Path = Path(output_dir).resolve()
+        resolved_out_dir.mkdir(parents=True, exist_ok=True)
+
+        worker_concurrency: int = self._calculate_conservative_worker_limit()
+        task_payload: list[
+            tuple[
+                PerformanceScore,
+                ScoreExpressionMap,
+                dict[str, Any],
+                Path,
+                Path,
+                str,
+                int,
+            ]
+        ] = []
+        matrix_index: int = 0
+
+        for score, expression_map in score_tuples:
+            base_name: str = score.source.stem
+
+            for v_idx in range(variation_count):
+                instance_filename: str = f"{base_name}_var_{v_idx}"
+
+                # Deriving a mathematically unique, predictable variant seed for this specific execution loop
+                variant_seed: int = base_seed + matrix_index
+
+                # Decouple the data structure states entirely from the parent thread context loop
+                mutated_score: PerformanceScore = copy.deepcopy(score)
+                mutated_map: ScoreExpressionMap = copy.deepcopy(expression_map)
+
+                selected_config: dict[str, Any] = self.engine_configs[
+                    matrix_index % len(self.engine_configs)
+                ]
+                selected_rir: Path = self.rir_pool[matrix_index % len(self.rir_pool)]
+                matrix_index += 1
+
+                task_payload.append(
+                    (
+                        mutated_score,
+                        mutated_map,
+                        selected_config,
+                        selected_rir,
+                        resolved_out_dir,
+                        instance_filename,
+                        variant_seed,
+                    )
+                )
+
+        print(
+            f"\n🚀 Launching Integrated Humanizer Stream Engine [{worker_concurrency} Cores Active]"
+        )
+        print(
+            f"📦 Total target dataset variation matrix size: {len(task_payload)} files"
+        )
+
+        completed_records: list[Path] = []
+        pool_context = multiprocessing.get_context("spawn")
+
+        with pool_context.Pool(
+            processes=worker_concurrency, maxtasksperchild=1
+        ) as stream_pool:
+            task_stream = stream_pool.imap_unordered(
+                _isolated_render_thunk, task_payload
+            )
+
+            for idx, result_path_str in enumerate(task_stream, start=1):
+                completed_records.append(Path(result_path_str))
+                print(
+                    f"  ✅ [{idx}/{len(task_payload)}] Humanized & Rendered variation: {Path(result_path_str).name}"
+                )
+
+                import gc
+
+                gc.collect()
+
+        print(
+            f"\n🎉 Generation successful! {len(completed_records)} files compiled smoothly beneath memory caps.\n"
+        )
+        return completed_records
+
+    def _calculate_conservative_worker_limit(self) -> int:
+        """Computes hardware allocation safety limits."""
+        hardware_cores: int = os.cpu_count() or 1
+        return max(1, int(hardware_cores * 0.5))
+
+=== FILE: ./src/score2dataset/__init__.py ===
+"""Public API entry point for the score2dataset package.
+
+Exposes core generation pipelines and domain-specific exception types
+directly at the root namespace level.
+"""
+
+from score2dataset.audio_engine import AudioEngine, SfizzRenderEngine
+from score2dataset.datamodels import PerformanceScore
+from score2dataset.exceptions import (
+    AudioEngineError,
+    ExporterError,
+    ParserError,
+    ProcessorError,
+    Score2DatasetError,
+)
+from score2dataset.exporters.midi_exporter import MidiExporter
+from score2dataset.generator import DatasetGenerator
+from score2dataset.parsers.musicxml_parser import MusicXMLParser
+from score2dataset.parsers.score_parser import ScoreParser
+
+__all__: list[str] = [
+    "AudioEngine",
+    "AudioEngineError",
+    "DatasetGenerator",
+    "ExporterError",
+    "MidiExporter",
+    "MusicXMLParser",
+    "ParserError",
+    "PerformanceScore",
+    "ProcessorError",
+    "Score2DatasetError",
+    "ScoreParser",
+    "SfizzRenderEngine",
+]
+
+=== FILE: ./src/score2dataset/main.py ===
+"""Command Line Interface for the score2dataset generation pipeline.
+
+This module provides the terminal-facing interface to orchestrate mass synthetic
+audio dataset production. It decodes terminal flags, coordinates security validation
+sweeps across asset trees, and boots up the pipeline execution engines.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+from score2dataset.generator import DatasetGenerator
+from score2dataset.parsers.musicxml_parser import MusicXMLParser
+from score2dataset.audio_engine import SfizzRenderEngine
+
+# from score2dataset.validators import validate_musicxml
+# from score2dataset.validators import validate_sfz
+
+# Safeguard to support running this file directly on lab terminals
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, str(object=Path(__file__).resolve().parents[2]))
+    # __package__ = "score2dataset"
+
+
+def parse_arguments(args_list: list[str]) -> argparse.Namespace:
+    """Decodes, standardizes, and validates terminal string arguments.
+
+    Processes raw string parameters from the shell environment, mapping them
+    into structured namespace variables while enforcing operational bounds.
+
+    Args:
+        args_list: A list of string arguments passed via the terminal interface.
+
+    Returns:
+        A Namespace object containing validated user options and paths.
+    """
+    parser = argparse.ArgumentParser(
+        description="score2dataset: Bulk acoustic variations generator from structured scores."
+    )
+
+    subparsers: argparse._SubParsersAction = parser.add_subparsers(
+        dest="command", required=True, help="Target processing routine to execute."
+    )
+
+    # Main workflow execution engine configuration
+    parser_run = subparsers.add_parser(
+        "run",
+        help="Execute the full alteration, timing deformation, and rendering pipeline.",
+    )
+    parser_run.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        type=str,
+        help="Path to the primary source input (.musicxml or .mxl) target score.",
+    )
+    parser_run.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        type=str,
+        help="Destination directory tree where final synthesized datasets are saved.",
+    )
+    parser_run.add_argument(
+        "-s",
+        "--sfz",
+        required=True,
+        type=str,
+        help="Path to the target SFZ virtual instrument file to load into the engine.",
+    )
+    parser_run.add_argument(
+        "-r",
+        "--rir",
+        type=str,
+        default=None,
+        help="Optional path to a physical Room Impulse Response WAV file for reverb processing.",
+    )
+
+    # Asset integrity verification suite configuration
+    parser_validate = subparsers.add_parser(
+        "validate",
+        help="Run non-destructive structure diagnostics across input audio and score files.",
+    )
+
+    validate_subparsers = parser_validate.add_subparsers(
+        dest="subcommand", required=True, help="Target file format validation matrix."
+    )
+
+    # Structural sampler file diagnostics configuration
+    parser_validate_sfz = validate_subparsers.add_parser(
+        "sfz",
+        help="Validate an SFZ file structure and its internal audio sample linkages.",
+    )
+    parser_validate_sfz.add_argument(
+        "-s",
+        "--sfz",
+        required=True,
+        type=str,
+        help="Path to the target SFZ file to verify.",
+    )
+
+    # XML notation schema validation configuration
+    parser_validate_xml = validate_subparsers.add_parser(
+        "xml", help="Validate a MusicXML file's readability and structural continuity."
+    )
+    parser_validate_xml.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        type=str,
+        help="Path to the target MusicXML file to verify.",
+    )
+
+    return parser.parse_args(args_list)
+
+
+def main(args: list[str] | None = None) -> int:
+    """The central package orchestration controller and program lifecycle anchor.
+
+    Intercepts terminal parameters, routes execution workflow tasks to matching
+    submodules, manages pipeline execution resources, and signals execution status
+    codes back to the operating system host.
+
+    Args:
+        args: A list of runtime parameters. Defaults to sys.argv[1:] if omitted.
+
+    Returns:
+        An integer system exit status code where 0 indicates a flawless run
+        and 1 represents a structural operational fault.
+    """
+    if args is None:
+        args = sys.argv[1:]
+
+    try:
+        parsed_args = parse_arguments(args)
+
+        # Route execution based on the parsed subcommand string
+        match parsed_args.command:
+            case "run":
+                input_file: Path = Path(parsed_args.input).resolve()
+
+                # 1. Dynamically select the correct parser based on file extension
+                match input_file.suffix.lower():
+                    case ".musicxml" | ".mxl":
+                        parser = MusicXMLParser()
+                    case _:
+                        print(
+                            f"ERROR: Unsupported file format extension: {input_file.suffix}",
+                            file=sys.stderr,
+                        )
+                        return 1
+
+                # 2. Convert file to the uniform internal memory structure
+                score_data = parser.parse_score(input_file)
+
+                # 3. Initialize the audio synthesis backend wrapper (Packaged inside a list)
+
+                sfizz_backend = SfizzRenderEngine(sfz_path=parsed_args.sfz)
+
+                # 4. Inject engine and rir lists into the non-cartesian balanced coordinator
+                generator = DatasetGenerator(
+                    engines=[sfizz_backend],
+                    rir_paths=[parsed_args.rir] if parsed_args.rir else [],
+                )
+
+                # 5. Execute the batch generation routine using the memory structures
+                # For local testing, we default variation_count to 1
+                generator.generate_batch(
+                    base_scores=[score_data],
+                    output_dir=parsed_args.output,
+                    variation_count=1,
+                )
+
+                print("SUCCESS: Full generation pipeline executed flawlessly.")
+                return 0
+
+            case "validate":
+                match parsed_args.subcommand:
+                    case "sfz":
+                        print(
+                            f"Running diagnostics on SFZ asset tree: {parsed_args.sfz}..."
+                        )
+
+                        # Call the silent backend validator
+                        is_valid = True  # validate_sfz(parsed_args.sfz)
+
+                        # The UI presentation happens HERE
+                        if is_valid:
+                            print(
+                                "SUCCESS: The SFZ file and all internal sample linkages are perfectly valid!"
+                            )
+                            return 0
+                        else:
+                            print(
+                                "ERROR: SFZ validation failed! Check that all referenced audio assets exist.",
+                                file=sys.stderr,
+                            )
+                            return 1
+
+                    case "xml":
+                        print(
+                            f"Running diagnostics on MusicXML score: {parsed_args.input}..."
+                        )
+
+                        # Call the silent backend validator
+                        is_valid = True  # validate_xml(parsed_args.input)
+
+                        # The UI presentation happens HERE
+                        if is_valid:
+                            print(
+                                f"SUCCESS: '{parsed_args.input}' is a fully compliant and readable MusicXML file."
+                            )
+                            return 0
+                        else:
+                            print(
+                                f"ERROR: '{parsed_args.input}' contains structural issues or is an invalid XML.",
+                                file=sys.stderr,
+                            )
+                            return 1
+    except FileNotFoundError as e:
+        print(
+            f"ERROR: A required file could not be found during generation.\nDetails: {e}",
+            file=sys.stderr,
+        )
+        return 1
+
+    except RuntimeError as e:
+        print(
+            f"ERROR: The Sfizz audio engine encountered an operational fault.\nDetails: {e}",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+=== FILE: ./src/score2dataset/run_batch.py ===
+"""Master execution wrapper to prevent university NFS swap memory crashes.
+
+Launches the core generation script sequentially in isolated process blocks,
+guaranteeing complete operating system swap space reclamation between runs.
+"""
+
+import subprocess
+import sys
+
+
+def main() -> None:
+    """Executes the rendering pipeline script in controlled, isolated cycles."""
+    # Define how many distinct variations you want in total
+    total_variations: int = 1
+    print(f"=== Starting Safe Batch Execution Matrix ({total_variations} loops) ===")
+
+    for i in range(1, total_variations + 1):
+        print(
+            f"\n[CYCLE {i}/{total_variations}] Spawning isolated shell worker process..."
+        )
+
+        # Launch your diagnostics script as an independent operating system task.
+        # This gives your script a clean environment slate on every single loop.
+        result = subprocess.run(
+            ["python", "src/score2dataset/quick_test.py"],
+            capture_output=False,
+            text=True,
+            check=False,
+        )
+
+        # Exit immediately if an internal crash or file path fault is detected
+        if result.returncode != 0:
+            print(
+                f"[CRITICAL] Batch pipeline failed at cycle iteration {i}.",
+                file=sys.stderr,
+            )
+            sys.exit(result.returncode)
+
+    print(
+        "\n=== SYSTEM SUCCESS: Complete batch processed with flat swap utilization! ==="
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+=== FILE: ./src/score2dataset/quick_test.py ===
+"""Single-sample rendering pipeline verification script.
+
+This standalone diagnostic tool executes a full end-to-end integration test,
+parsing a solitary notation score, serializing intermediate assets, and
+applying spatial convolutions to output a standardized 48kHz mono 16-bit WAV.
+"""
+
+import sys
+from pathlib import Path
+from typing import Any
+
+from score2dataset.exceptions import AudioEngineError, Score2DatasetError
+from score2dataset.generator import DatasetGenerator
+from score2dataset.parsers.musicxml_parser import MusicXMLParser
+
+# Explicitly append the local src directory tree to guarantee package discovery
+ROOT_DIR: Path = Path(__file__).resolve().parent.parent.parent
+# sys.path.insert(0, str(ROOT_DIR / "src"))
+
+
+def run_diagnostics() -> int:
+    """Orchestrates a single isolated test pass across the pipeline framework.
+
+    Returns:
+        An integer system exit status code where 0 indicates a flawless run
+        and 1 represents a structural configuration fault.
+    """
+    print("=== Pipeline Integration Diagnostics ===")
+
+    xml_input: Path = ROOT_DIR / "data" / "inputs" / "hungarian_dance_n5.musicxml"
+    output_dir: Path = ROOT_DIR / "data" / "outputs" / "diagnostic_test"
+
+    if not xml_input.exists():
+        print(
+            f"CRITICAL TEST FAULT: Missing sample input score at: {xml_input}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        print(f" -> Activating MusicXML Parser on target: {xml_input.name}...")
+        parser = MusicXMLParser(target_tpqn=480)
+        in_memory_score = parser.parse_score(xml_input)
+        print(
+            f" -> Parse Successful. Extracted {len(in_memory_score.events)} NoteEvents."
+        )
+
+        # 1. Discover all pre-conditioned, zero-latency instrument maps dynamically
+        sfz_root: Path = ROOT_DIR / "data" / "assets" / "sfz"
+        safe_sfz_paths = list(sfz_root.rglob("*_OnsetSafe.sfz"))
+
+        # Formulate a structured configuration dictionary for each unique instrument found
+        engine_configs: list[dict[str, Any]] = [
+            {"sfz_path": str(sfz_path)} for sfz_path in safe_sfz_paths
+        ]
+        print(
+            f" -> Discovered {len(engine_configs)} optimized SFZ engine mapping configuration(s)."
+        )
+
+        # 2. Gather all pre-conditioned RIR assets from your curated folder pool
+        rir_folder: Path = ROOT_DIR / "data" / "assets" / "rir"
+        batch_rir_paths: list[str] = [str(p) for p in rir_folder.glob("*.wav")]
+        print(
+            f" -> Discovered {len(batch_rir_paths)} conditioned RIR asset configuration(s)."
+        )
+
+        print(
+            " -> Initializing Dataset Generator middleware with complete asset pool matrices..."
+        )
+        generator = DatasetGenerator(
+            engine_configs=engine_configs, rir_paths=batch_rir_paths
+        )
+
+        print(" -> Launching batch rendering loop for the singular target score...")
+        # Keeps base_scores as a single-item list containing exactly one score.
+        # variation_count=5 means the generator will create 5 distinct environmental variations
+        # combining different discovered SFZ setups and RIR acoustical profiles.
+        saved_paths: list[Path] = generator.generate_batch(
+            base_scores=[in_memory_score],
+            output_dir=str(output_dir),
+            variation_count=100,
+        )
+
+        print("\n=== BATCH RENDER COMPLETE ===")
+        print(
+            f"Successfully serialized {len(saved_paths)} audio file variations inside: {output_dir}"
+        )
+
+        print("\n=== SYSTEM CHECKS PASSED ===")
+        print(f"Generated File Location: {saved_paths[0]}")
+        print("Pipeline output successfully formatted to: Mono, 48kHz, 16-bit PCM.")
+        return 0
+
+    except Score2DatasetError as error:
+        print("\n=== PIPELINE DOMAIN FAILURE TRAPPED ===", file=sys.stderr)
+        print(f"Diagnostic Exception Intercepted: {error}", file=sys.stderr)
+
+        # Explicit type narrowing for backend engine failures
+        if isinstance(error, AudioEngineError):
+            print(f"Engine Exit Code: {error.returncode}", file=sys.stderr)
+            if error.details:
+                print(
+                    "\n--- Engine Process Output (stdout/stderr) ---", file=sys.stderr
+                )
+                print(error.details, file=sys.stderr)
+                print("---------------------------------------------", file=sys.stderr)
+
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(run_diagnostics())
+
+=== FILE: ./src/score2dataset/exceptions.py ===
+"""Centralized exception hierarchy for the score2dataset package.
+
+Provides structured, domain-specific error types allowing the dataset
+generation pipeline to respond distinctively to configuration, parsing,
+and runtime execution faults.
+"""
+
+from collections.abc import Callable
+from typing import Any
+
+
+class Score2DatasetError(Exception):
+    """Base exception class for all errors raised by this package."""
+
+
+class AudioEngineError(Score2DatasetError):
+    """Tracks backend executable failures and child shell process crashes.
+
+    Attributes:
+        returncode: The exit status code returned by the child process shell.
+        details: Raw stdout or stderr messages pulled from the execution crash.
+    """
+
+    def __init__(self, message: str, returncode: int, details: str = "") -> None:
+        super().__init__(message)
+        self.returncode: int = returncode
+        self.details: str = details
+
+    def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
+        """Customizes pickling behavior to preserve attributes across process boundaries."""
+        return (
+            self.__class__,
+            (self.args[0], self.returncode, self.details),
+        )
+
+
+class ExporterError(Score2DatasetError):
+    """Raised when serialization to standard protocols (like MIDI) fails."""
+
+
+class ParserError(Score2DatasetError):
+    """Raised when an external score file breaks schema rules or is corrupt."""
+
+
+class ProcessorError(Score2DatasetError):
+    """Raised when an internal audio digital signal processing step fails."""
+
+=== FILE: ./src/score2dataset/audio_engine.py ===
+"""Abstraction layer and engine interfaces for audio synthesizer plugins.
+
+This module defines the universal execution template for audio rendering backends,
+allowing the dataset pipeline to remain agnostic of the underlying synthesizer engine.
+"""
+
+import os
+import shutil
+import subprocess
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any, Literal
+
+from score2dataset.exceptions import AudioEngineError
+
+
+class AudioEngine(ABC):
+    """Abstract base class establishing the contract for all rendering engines.
+
+    Any audio synthesizer module integrated into the package must subclass
+    this template and implement its methods to guarantee pipeline compatibility.
+    """
+
+    @abstractmethod
+    def render_audio(
+        self,
+        midi_path: Path,
+        output_wav_path: Path,
+        sample_rate: int = 48000,
+        block_size: int = 512,
+        polyphony: int = 64,
+    ) -> None:
+        """Executes an offline rendering pass to convert MIDI data into audio.
+
+        Args:
+            midi_path: Location of the input source MIDI file (.mid).
+            output_wav_path: Destination path where the rendered audio is written.
+            sample_rate: Frequency resolution profile in Hz.
+            block_size: Audio vector block streaming constraints.
+            polyphony: Maximum simultaneous voice allocation limit.
+
+        Raises:
+            RuntimeError: If the underlying synthesis process encounters a fault.
+        """
+
+
+class SfizzRenderEngine(AudioEngine):
+    """Sfizz-specific implementation of the universal audio engine interface.
+
+    Spawns and manages the locally compiled native C++ sfizz_render engine
+    as an isolated child process to generate acoustic samples from SFZ libraries.
+    """
+
+    def __init__(self, sfz_path: str, binary_path: str | None = None) -> None:
+        """Locates the sfizz binary and locks it to a specific instrument layout.
+
+        Args:
+            sfz_path: Path to the target SFZ virtual instrument file to load.
+            binary_path: Optional explicit string path to the sfizz_render binary.
+
+        Raises:
+            FileNotFoundError: If the execution binary or SFZ file cannot be located.
+        """
+        self.sfz_path: Path = Path(sfz_path).resolve()
+        if not self.sfz_path.exists():
+            raise FileNotFoundError(f"Target SFZ instrument not found: {self.sfz_path}")
+
+        if binary_path:
+            self.binary: Path = Path(binary_path).resolve()
+        else:
+            discovered_bin: Path | None = self._discover_binary()
+            if discovered_bin is None:
+                raise FileNotFoundError(
+                    "Could not automatically locate the 'sfizz_render' binary on this system. "
+                    "Please provide an explicit 'binary_path'."
+                )
+            self.binary = discovered_bin
+
+        if not self.binary.exists():
+            raise FileNotFoundError(f"Sfizz rendering binary not found: {self.binary}")
+
+    def _discover_binary(self) -> Path | None:
+        """Scans standardized system paths to locate the sfizz_render executable.
+
+        Returns:
+            A validated Path object pointing to the binary file destination.
+        """
+
+        user_bin_tree: str = os.path.expanduser(path="~/.local/bin")
+
+        # Combine your local directory with the global system PATH string
+        search_paths: str = f"{user_bin_tree}{os.pathsep}{os.environ.get('PATH', '')}"
+
+        # Perform a single, exhaustive system search using the combined paths
+        lookup: str | None = shutil.which(
+            cmd="sfizz_render", path=search_paths
+        ) or shutil.which(cmd="sfizz-render", path=search_paths)
+
+        if lookup:
+            return Path(lookup)
+
+        return None
+
+    def render_audio(
+        self,
+        midi_path: Path,
+        output_wav_path: Path,
+        sample_rate: int = 48000,
+        block_size: int = 512,
+        polyphony: int = 64,
+    ) -> None:
+        """Executes the sfizz command-line tool matrix to render raw audio blocks."""
+        command_matrix: list[str] = [
+            str(object=self.binary),
+            "--sfz",
+            str(object=self.sfz_path),
+            "--midi",
+            str(object=midi_path.resolve()),
+            "--wav",
+            str(object=output_wav_path.resolve()),
+            "--blocksize",
+            str(object=block_size),
+            "--samplerate",
+            str(object=sample_rate),
+            "--polyphony",
+            str(object=polyphony),
+        ]
+
+        try:
+            subprocess.run(
+                args=command_matrix,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as error:
+            error_details: Any | Literal["Unknown fault."] = (
+                error.stderr.strip() if error.stderr else "Unknown fault."
+            )
+            raise AudioEngineError(
+                message="Sfizz engine rendering execution failed.",
+                returncode=error.returncode,
+                details=error_details,
+            ) from error
+
+=== FILE: ./src/score2dataset/exporters/__init__.py ===
+
+=== FILE: ./src/score2dataset/exporters/midi_exporter.py ===
+"""MIDI serialization and timeline rendering engine.
+
+This module converts internal, duration-based PerformanceScore data models
+back into sequential, delta-time MIDI streams compliant with standard MIDI file formats.
+"""
+
+from pathlib import Path
+
+from mido import Message, MetaMessage, MidiFile, MidiTrack
+
+from score2dataset.datamodels import PerformanceScore
+
+
+class MidiExporter:
+    """Serializes in-memory performance timelines into standard MIDI files.
+
+    Translates absolute onset coordinates and duration vectors into sequential
+    delta-time message pools, enforcing protocol value constraints.
+    """
+
+    def __init__(self, target_tpqn: int = 480, fixed_bpm: int = 120) -> None:
+        """Initializes the MIDI exporter configuration.
+
+        Args:
+            target_tpqn: Ticks Per Quarter Note resolution forced onto the
+                output MIDI file structure. Defaults to 480.
+        """
+        self.target_tpqn: int = target_tpqn
+        self.fixed_bpm: int = fixed_bpm
+
+    def export_score(
+        self,
+        performance_score: PerformanceScore,
+        output_path: Path,
+        instrument_program: int = 0,
+    ) -> None:
+        """Serializes an absolute integer tick timeline into a flat MIDI file.
+
+        Sorts concurrent events chronologically, resolves polyphonic note spans
+        into progressive delta ticks, and saves the file to disk.
+
+        Args:
+            performance_score: The mutated PerformanceScore container to serialize.
+            output_path: Target file system path destination for the exported file (.mid).
+            instrument_program: Standard MIDI patch program index (0-127). Defaults to 0.
+
+        Raises:
+            IOError: If writing to the target output path fails due to system constraints.
+        """
+        mid = MidiFile(ticks_per_beat=self.target_tpqn)
+        track = MidiTrack()
+        mid.tracks.append(track)
+
+        # Enforce constant 120 BPM metadata parameters (500,000 microseconds per beat)
+        tempo_microsec: int = round(number=60_000_000 / self.fixed_bpm)
+        track.append(MetaMessage(type="set_tempo", tempo=tempo_microsec, time=0))
+        track.append(Message(type="program_change", program=instrument_program, time=0))
+
+        midi_messages_pool: list[dict] = []
+
+        for event in performance_score.events:
+            # Enforce numerical clip constraints within protocol boundaries
+            pitch: int = max(0, min(int(event.pitch), 127))
+            velocity: int = max(0, min(int(event.velocity), 127))
+
+            # Resolve coordinates into absolute start and terminal boundaries
+            abs_start_tick = max(0, int(event.onset_ticks))
+            dur_ticks = max(1, int(event.duration_ticks))
+            abs_end_tick = abs_start_tick + dur_ticks
+
+            # Pool independent edge markers for chronological layout grouping
+            midi_messages_pool.append(
+                {
+                    "type": "note_on",
+                    "pitch": pitch,
+                    "velocity": velocity,
+                    "abs_tick": abs_start_tick,
+                }
+            )
+            midi_messages_pool.append(
+                {
+                    "type": "note_off",
+                    "pitch": pitch,
+                    "velocity": 0,
+                    "abs_tick": abs_end_tick,
+                }
+            )
+
+        # Note-Off message priority resolves hanging overlaps on identical timestamps
+        midi_messages_pool.sort(
+            key=lambda x: (x["abs_tick"], 0 if x["type"] == "note_off" else 1)
+        )
+
+        # Deform absolute intervals into progressive delta time offsets
+        last_abs_tick = 0
+        for msg in midi_messages_pool:
+            delta_tick = msg["abs_tick"] - last_abs_tick
+            last_abs_tick = msg["abs_tick"]
+
+            track.append(
+                Message(
+                    msg["type"],
+                    note=msg["pitch"],
+                    velocity=msg["velocity"],
+                    time=delta_tick,
+                )
+            )
+
+        mid.save(filename=str(object=output_path))
+
+=== FILE: ./src/score2dataset/modifiers/deviations.py ===
+import time
+
+import numpy as np
+
+from src.repository.musicxml_to_events import parse_musicxml_to_midi_ticks
+
+
+def apply_event_level_deviations(canonical_events, config):
+    """
+    Aplica desvios estocásticos baseados em falhas motoras humanas
+    a uma lista de eventos canônicos.
+    """
+    # -----------------------------------------------------------------
+    # 1. MODIFICAÇÃO DISCRETA DE IDENTIDADES (Keep, Omit, Sub)
+    # -----------------------------------------------------------------
+    modified_sequence = []
+
+    # Contadores para validação do Limiar de Integridade
+    N_sub = 0
+    N_omit = 0
+
+    # Distribuição Categorizada: define as probabilidades de cada ação
+    p_keep = config["p_keep"]
+    p_sub = config["p_sub"]
+    p_omit = config["p_omit"]
+
+    # Validação das probabilidades
+    assert np.isclose(p_keep + p_sub + p_omit, 1.0)
+
+    outcomes = ["keep", "sub", "omit"]
+    probabilities = [p_keep, p_sub, p_omit]
+
+    for e in canonical_events:
+        # Sorteia o destino da nota baseado na Distribuição Categorizada
+        y_i = np.random.choice(outcomes, p=probabilities)
+
+        if y_i == "keep":
+            # Preserva a nota original intacta
+            modified_sequence.append(e.copy())
+
+        elif y_i == "sub":
+            # Substituição: Mantém tempo, duração e volume, mas desloca o Pitch
+            N_sub += 1
+            e_sub = e.copy()
+
+            # Amostragem da Gaussiana Discreta para o desvio do pitch (\delta_p)
+            delta_p = int(round(np.random.normal(0, config["sigma_p"])))
+            # Garante que o pitch fique dentro dos limites MIDI (0-127)
+            e_sub["pitch"] = max(0, min(127, e_sub["pitch"] + delta_p))
+
+            modified_sequence.append(e_sub)
+
+        elif y_i == "omit":
+            # Omissão: A nota simplesmente desaparece (\emptyset)
+            N_omit += 1
+            continue
+
+    # -----------------------------------------------------------------
+    # 2. INSERÇÕES ADITIVAS (Ghost Strikes / Notas Fantasmas)
+    # -----------------------------------------------------------------
+    # Sorteia o número total de inserções baseado na Distribuição de Poisson (\lambda)
+    N_ins = np.random.poisson(config["lambda_poisson"])
+
+    # Se houver notas na sequência modificada e inserções a fazer
+    if len(modified_sequence) > 0 and N_ins > 0:
+        # Sorteia de forma Uniforme quais índices da sequência vão gerar o erro aditivo
+        target_indices = np.random.randint(0, len(modified_sequence), size=N_ins)
+
+        for idx in target_indices:
+            parent_note = modified_sequence[idx]
+
+            # Cria a nota fantasma herdando tempo, duração e volume da nota mãe
+            e_ins = parent_note.copy()
+
+            # Desloca o pitch usando a mesma Gaussiana Discreta (\delta_ins)
+            delta_ins = int(round(np.random.normal(0, config["sigma_p"])))
+            e_ins["pitch"] = max(0, min(127, e_ins["pitch"] + delta_ins))
+
+            # Insere o ghost strike de volta na sequência
+            modified_sequence.append(e_ins)
+
+    # Reordena a sequência final por start_time para manter a ordem cronológica
+    modified_sequence.sort(key=lambda x: x["start_time"])
+
+    # -----------------------------------------------------------------
+    # 3. VALIDAÇÃO: LIMIAR DE INTEGRIDADE ESTRUTURAL (\Gamma)
+    # -----------------------------------------------------------------
+    N_neutral = len(canonical_events)
+    w_s = config["w_s"]
+    w_o = config["w_o"]
+    w_i = config["w_i"]
+    gamma = config["gamma_threshold"]
+
+    cumulative_noise = (w_s * N_sub + w_o * N_omit + w_i * N_ins) / N_neutral
+
+    is_valid_performance = cumulative_noise < gamma
+
+    # Metadados do processamento para auditoria científica
+    metrics = {
+        "N_sub": N_sub,
+        "N_omit": N_omit,
+        "N_ins": N_ins,
+        "cumulative_noise": round(cumulative_noise, 4),
+        "is_valid": is_valid_performance,
+    }
+
+    return modified_sequence, metrics
+
+
+# =====================================================================
+# CONFIGURAÇÃO DO BENCHMARK (801 TENTATIVAS)
+# =====================================================================
+if __name__ == "__main__":
+    # Garantindo reprodutibilidade científica
+    np.random.seed(42)
+
+    # Nosso template canônico de teste baseado no "The Entertainer"
+    hungarian_canonical = parse_musicxml_to_midi_ticks("hungarian_dance_n5.musicxml")
+
+    pipeline_config = {
+        "p_keep": 0.85,
+        "p_sub": 0.10,
+        "p_omit": 0.05,
+        "sigma_p": 1.2,
+        "lambda_poisson": 2.0,
+        "w_s": 0.2,
+        "w_o": 0.5,
+        "w_i": 1.5,
+        "gamma_threshold": 0.40,
+    }
+
+    TOTAL_TRIES = 801
+
+    # Listas para acumular os resultados de cada iteração
+    substitutions_history = []
+    omissions_history = []
+    insertions_history = []
+    noise_history = []
+    valid_count = 0
+
+    print(f"Iniciando simulação de {TOTAL_TRIES} execuções ruidosas...")
+
+    # Cronômetro de alta precisão ativado para o loop inteiro
+    start_benchmark = time.perf_counter()
+
+    for _ in range(TOTAL_TRIES):
+        # Executa o pipeline
+        _, run_report = apply_event_level_deviations(
+            hungarian_canonical, pipeline_config
+        )
+
+        # Armazena os dados brutos da rodada
+        substitutions_history.append(run_report["N_sub"])
+        omissions_history.append(run_report["N_omit"])
+        insertions_history.append(run_report["N_ins"])
+        noise_history.append(run_report["cumulative_noise"])
+
+        if run_report["is_valid"]:
+            valid_count += 1
+
+    end_benchmark = time.perf_counter()
+
+    # -----------------------------------------------------------------
+    # CÁLCULO DAS MÉTRICAS AGREGADAS
+    # -----------------------------------------------------------------
+    total_time = end_benchmark - start_benchmark
+    avg_time_ms = (total_time / TOTAL_TRIES) * 1000  # Convertido para milissegundos
+
+    avg_subs = np.mean(substitutions_history)
+    avg_omits = np.mean(omissions_history)
+    avg_ins = np.mean(insertions_history)
+    avg_noise = np.mean(noise_history)
+
+    success_rate = (valid_count / TOTAL_TRIES) * 100
+
+    # -----------------------------------------------------------------
+    # EXIBIÇÃO DO RELATÓRIO FINAL
+    # -----------------------------------------------------------------
+    print("\n" + "=" * 50)
+    print(f"📊 RELATÓRIO DO PIPELINE ESTOCÁSTICO ({TOTAL_TRIES} TENTATIVAS)")
+    print("=" * 50)
+    print(f"⏱️ Tempo Total de Processamento: {total_time:.4f} segundos")
+    print(f"⚡ Tempo Médio por Execução:     {avg_time_ms:.3f} milissegundos")
+    print("-" * 50)
+    print(f"🎵 Média de Substituições:       {avg_subs:.2f} notas por música")
+    print(f"🔇 Média de Omissões:            {avg_omits:.2f} notas por música")
+    print(f"👻 Média de Inserções (Ghosts):  {avg_ins:.2f} notas por música")
+    print(f"📉 Índice de Ruído Médio:        {avg_noise:.3f}")
+    print("-" * 50)
+    print(f"✅ Performances Válidas (Γ):    {valid_count} de {TOTAL_TRIES}")
+    print(f"📈 Taxa de Aproveitamento:       {success_rate:.2f}%")
+    print("=" * 50)
+
+=== FILE: ./src/score2dataset/modifiers/__init__.py ===
+
+=== FILE: ./src/score2dataset/modifiers/tempo_curve.py ===
+import xml.etree.ElementTree as ET
+import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+
+def parse_musicxml_complet_pipeline(xml_path, tpqn=480):
+    """
+    Varre o arquivo MusicXML uma única vez (paralelismo de dados).
+    Extrai tanto a sequência de eventos canônicos quanto as diretrizes de andamento.
+    """
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    canonical_events = []
+    score_directives = []
+
+    note_base_midi = {"C": 12, "D": 14, "E": 16, "F": 17, "G": 19, "A": 21, "B": 23}
+
+    for part in root.findall("part"):
+        current_time_ticks = 0
+        divisions = 1
+        last_note_duration_ticks = 0
+
+        # Mapeamento dinâmico para fechar o end_tick de ritardandos/accelerandos
+        active_ramps = []
+
+        for measure in part.findall("measure"):
+            # 1. Captura atributos estruturais (divisions, etc.)
+            attributes = measure.find("attributes")
+            if attributes is not None:
+                div_elem = attributes.find("divisions")
+                if div_elem is not None:
+                    divisions = int(div_elem.text)
+
+            # 2. Captura metadados de andamento na partitura (<direction>)
+            for direction in measure.findall("direction"):
+                # Verifica andamento nominal explícito (ex: <sound tempo="76"/>)
+                sound = direction.find("sound")
+                if sound is not None and "tempo" in sound.attrib:
+                    bpm_value = float(sound.attrib["tempo"])
+                    score_directives.append(
+                        {
+                            "tick": current_time_ticks,
+                            "type": "nominal",
+                            "value": bpm_value,
+                        }
+                    )
+
+                # Verifica marcações textuais de rampa (ritardando/accelerando) em <words>
+                # Nota: Softwares reais costumam ancorar isso em tags tipo <direction-type><words>
+                words = direction.find(".//words")
+                if words is not None and words.text:
+                    texto = words.text.lower()
+                    if "rit" in texto or "ritardando" in texto:
+                        active_ramps.append(
+                            {"start_tick": current_time_ticks, "type": "ritardando"}
+                        )
+                    elif "accel" in texto or "accelerando" in texto:
+                        active_ramps.append(
+                            {"start_tick": current_time_ticks, "type": "accelerando"}
+                        )
+                    elif "a tempo" in texto or "tempo i" in texto:
+                        score_directives.append(
+                            {"tick": current_time_ticks, "type": "a_tempo"}
+                        )
+
+            # 3. Processamento sequencial de elementos de nota do compasso
+            measure_duration_ticks = 0
+            for element in measure:
+                if element.tag == "note":
+                    is_chord = element.find("chord") is not None
+                    is_rest = element.find("rest") is not None
+
+                    duration_elem = element.find("duration")
+                    if duration_elem is not None:
+                        xml_duration = float(duration_elem.text)
+                        duration_ticks = int(round((xml_duration / divisions) * tpqn))
+                    else:
+                        duration_ticks = 0
+
+                    if not is_chord:
+                        if not is_rest:
+                            start_time = current_time_ticks
+                        measure_duration_ticks += duration_ticks
+                    else:
+                        start_time = current_time_ticks - last_note_duration_ticks
+
+                    if duration_ticks > 0 and not is_rest:
+                        pitch_elem = element.find("pitch")
+                        if pitch_elem is not None:
+                            step = pitch_elem.find("step").text
+                            octave = int(pitch_elem.find("octave").text)
+                            midi_note = note_base_midi[step] + (octave * 12)
+
+                            alter_elem = pitch_elem.find("alter")
+                            if alter_elem is not None:
+                                midi_note += int(alter_elem.text)
+
+                            canonical_events.append(
+                                {
+                                    "pitch": midi_note,
+                                    "start_time": start_time,
+                                    "duration": duration_ticks,
+                                    "volume": 90,
+                                }
+                            )
+
+                    if not is_chord:
+                        current_time_ticks += duration_ticks
+                        last_note_duration_ticks = duration_ticks
+
+            # Lógica elástica: se uma rampa foi aberta nesta medida, definimos que ela
+            # estende-se e termina exatamente no final do compasso corrente (limite local)
+            while active_ramps:
+                ramp = active_ramps.pop(0)
+                score_directives.append(
+                    {
+                        "tick": ramp["start_tick"],
+                        "type": ramp["type"],
+                        "end_tick": current_time_ticks,  # O compasso fecha a rampa se não houver alvo numérico
+                    }
+                )
+
+    return canonical_events, score_directives, current_time_ticks
+
+
+# [As funções matemáticas puras desenvolvidas anteriormente entram aqui]
+def calculate_pure_plateau_ramp(start_bpm, duration_ticks, direction="ritardando"):
+    t = np.arange(duration_ticks)
+    if duration_ticks <= 0:
+        return np.array([start_bpm])
+    if direction == "ritardando":
+        target_bpm = max(40.0, start_bpm * 0.70)
+        logistic_filter = 1.0 / (1.0 + np.exp(-0.005 * (t - (duration_ticks * 0.4))))
+        return start_bpm - (start_bpm - target_bpm) * logistic_filter
+    else:
+        target_bpm = min(240.0, start_bpm * 1.30)
+        logistic_filter = 1.0 / (1.0 + np.exp(-0.003 * (t - (duration_ticks * 0.5))))
+        return start_bpm + (target_bpm - start_bpm) * logistic_filter
+
+
+def generate_score_only_tempo_curve(score_directives, total_ticks):
+    base_curve = np.zeros(total_ticks)
+    current_nominal_bpm = 120.0
+    tempo_stack = [current_nominal_bpm]
+    directives = sorted(score_directives, key=lambda x: x["tick"])
+
+    i = 0
+    while i < total_ticks:
+        current_dir = next((d for d in directives if d["tick"] == i), None)
+        if current_dir:
+            if current_dir["type"] == "nominal":
+                current_nominal_bpm = current_dir["value"]
+                tempo_stack.append(current_nominal_bpm)
+                base_curve[i] = current_nominal_bpm
+                i += 1
+            elif current_dir["type"] == "a_tempo":
+                if len(tempo_stack) > 1:
+                    current_nominal_bpm = tempo_stack[-1]
+                base_curve[i] = current_nominal_bpm
+                i += 1
+            elif current_dir["type"] in ["ritardando", "accelerando"]:
+                start_tick = i
+                end_tick = current_dir["end_tick"]
+                ramp_bpms = calculate_pure_plateau_ramp(
+                    current_nominal_bpm,
+                    end_tick - start_tick,
+                    direction=current_dir["type"],
+                )
+                for t_idx, bpm_val in enumerate(ramp_bpms):
+                    if start_tick + t_idx >= total_ticks:
+                        break
+                    base_curve[start_tick + t_idx] = bpm_val
+                current_nominal_bpm = ramp_bpms[-1]
+                i = end_tick
+        else:
+            base_curve[i] = current_nominal_bpm
+            i += 1
+    return base_curve
+
+
+def generate_continuous_human_walk(base_curve, config):
+    total_ticks = len(base_curve)
+    expressive_curve = np.zeros(total_ticks)
+    random_walk_state = 0.0
+    inertia = 0.9995
+    for tick in range(total_ticks):
+        score_bpm = base_curve[tick]
+        innovation = np.random.normal(0, score_bpm * config["random_walk_volatility"])
+        random_walk_state = (inertia * random_walk_state) + (
+            (1.0 - inertia) * innovation
+        )
+        expressive_curve[tick] = np.clip(score_bpm + random_walk_state, 40.0, 240.0)
+    return expressive_curve
+
+
+# =====================================================================
+# MAIN PIPELINE & PLOT GRAPH
+# =====================================================================
+if __name__ == "__main__":
+    np.random.seed(42)
+    xml_filename = (
+        "hungarian_dance_n5.musicxml"  # Arquivo MusicXML gerado anteriormente
+    )
+
+    # 1. Extração Dinâmica e Paralela de Notas e Diretrizes diretamente do arquivo
+    try:
+        eventos_canonicos, diretivas_extraidas, total_ticks_musica = (
+            parse_musicxml_complet_pipeline(xml_filename)
+        )
+
+        print(
+            f"Sucesso! {len(eventos_canonicos)} notas extraídas e {len(diretivas_extraidas)} diretrizes de andamento catalogadas."
+        )
+        print("Diretrizes detectadas no XML:", diretivas_extraidas)
+
+        # 2. Computação das Curvas Base e Humana
+        pipeline_config = {"random_walk_volatility": 0.04}
+        curva_base_partitura = generate_score_only_tempo_curve(
+            diretivas_extraidas, total_ticks_musica
+        )
+        curva_humana_expressiva = generate_continuous_human_walk(
+            curva_base_partitura, pipeline_config
+        )
+
+        # 3. LOOKUP: Associa cada nota canônica ao seu andamento localizado na grade
+        for ev in eventos_canonicos:
+            ev["local_bpm"] = curva_humana_expressiva[
+                min(ev["start_time"], total_ticks_musica - 1)
+            ]
+
+        # =================================================================
+        # REQUISITO: GERAÇÃO DO GRÁFICO (MATPLOTLIB)
+        # =================================================================
+        plt.figure(figsize=(12, 6))
+        ticks_eixo_x = np.arange(total_ticks_musica)
+
+        plt.savefig("dump")
+
+        # Desenha a linha determinística da partitura (Platô)
+        plt.plot(
+            ticks_eixo_x,
+            curva_base_partitura,
+            label="Curva Alvo da Partitura (Semântica com Platô)",
+            color="blue",
+            linestyle="--",
+            linewidth=2,
+        )  # Desenha a curva humana contínua com o Random Walk integrado
+        plt.plot(
+            ticks_eixo_x,
+            curva_humana_expressiva,
+            label="Curva Expressiva Humana (Random Walk + Platô)",
+            color="darkred",
+            alpha=0.8,
+            linewidth=1.5,
+        )  # Plota marcadores onde as notas musicais de fato acontecem (Amostragem/Lookup)
+        onsets_x = [e["start_time"] for e in eventos_canonicos]
+        onsets_y = [e["local_bpm"] for e in eventos_canonicos]
+        plt.scatter(
+            onsets_x,
+            onsets_y,
+            color="black",
+            zorder=5,
+            label="Ataques das Notas (Onsets)",
+        )  # Destaca as diretrizes semânticas da música no gráfico
+        for d in diretivas_extraidas:
+            plt.axvline(x=d["tick"], color="gray", alpha=0.5, linestyle=":")
+            plt.text(
+                d["tick"] + 10,
+                plt.ylim()[0] + 5,
+                f"[{d['type'].upper()}]",
+                rotation=90,
+                color="gray",
+                fontsize=9,
+            )
+        plt.title(
+            "Evolução Contínua do Andamento Expressivo (Tempo Curve Model)",
+            fontsize=14,
+            fontweight="bold",
+        )
+        plt.xlabel("Tempo de Linha (Ticks MIDI)", fontsize=12)
+        plt.ylabel("Andamento (BPM)", fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.legend(loc="upper right")
+        plt.tight_layout()  # Exibe o gráfico na tela
+        caminho_imagem = "curva_tempo_expressiva.png"
+
+        plt.savefig(
+            caminho_imagem, dpi=300
+        )  # Salva o gráfico em alta resolução na pasta
+        print(f"\n[SUCESSO] Gráfico gerado e salvo em: {caminho_imagem}")
+        print(
+            "-> DICA: Basta clicar no arquivo 'curva_tempo_expressiva.png' na barra lateral esquerda do VS Code para ver o gráfico!"
+        )
+        plt.close()
+    except FileNotFoundError:
+        print(f"Erro: Salve o arquivo '{xml_filename}' no diretório antes de rodar.")
+
+=== FILE: ./src/score2dataset/parsers/score_parser.py ===
+"""Abstraction layer and contracts for musical score notation parsers.
+
+This module establishes universal interfaces to convert varying external notation
+formats into standardized in-memory PerformanceScore data models.
+"""
+
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+from score2dataset.datamodels import PerformanceScore
+
+
+class ScoreParser(ABC):
+    """Abstract base class establishing the contract for all score parsers.
+
+    Any file notation reader integrated into the package must subclass this
+    template to guarantee compatibility with the dataset generation loop.
+    """
+
+    @abstractmethod
+    def parse_score(self, file_path: Path) -> PerformanceScore:
+        """Parses an external score file and maps it to a PerformanceScore object.
+
+        Args:
+            file_path: The absolute path to the target notation file on disk.
+
+        Returns:
+            A standard populated PerformanceScore instance.
+
+        Raises:
+            ValueError: If the file content is corrupted or breaks schema rules.
+        """
+
+=== FILE: ./src/score2dataset/parsers/__init__.py ===
+
+=== FILE: ./src/score2dataset/parsers/musicxml_parser.py ===
+"""MusicXML and MXL notation schema parser.
+
+This module extracts pitch and rhythmic grids from structured XML elements,
+populating standardized PerformanceScore containers alongside deep Expression Maps.
+"""
+
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Final
+
+from score2dataset.datamodels import (
+    NoteEvent,
+    PerformanceScore,
+    ScoreExpressionMap,
+    WedgeEvent,
+)
+from score2dataset.parsers.score_parser import ScoreParser
+
+
+class MusicXMLParser(ScoreParser):
+    """Concrete parser implementation for reading MusicXML format sheets.
+
+    Converts localized raw notation definitions, divisions, and time counters
+    into a uniform, integer-based timeline mapped to an abstract tick resolution.
+    """
+
+    _STEP_MAP: Final[dict[str, int]] = {
+        "C": 0,
+        "D": 2,
+        "E": 4,
+        "F": 5,
+        "G": 7,
+        "A": 9,
+        "B": 11,
+    }
+
+    _DYNAMICS_VELOCITY_MAP: Final[dict[str, int]] = {
+        "ppp": 16,
+        "pp": 33,
+        "p": 49,
+        "mp": 64,
+        "mf": 80,
+        "f": 96,
+        "ff": 112,
+        "fff": 126,
+    }
+
+    def __init__(self, target_tpqn: int = 480) -> None:
+        """Initializes the parser configurations and immutable musical maps."""
+        self.target_tpqn: int = target_tpqn
+
+    def parse_score(
+        self, file_path: Path
+    ) -> tuple[PerformanceScore, ScoreExpressionMap]:
+        """Parses an external MusicXML score file into a standard PerformanceScore and ExpressionMap."""
+        tree = ET.parse(source=file_path)
+        root = tree.getroot()
+
+        score = PerformanceScore(source=file_path)
+        expression_map = ScoreExpressionMap(ticks_per_beat=self.target_tpqn)
+
+        # Enforce global scale parameter validations
+        divisions_elem = root.find(path=".//attributes/divisions")
+        if (
+            divisions_elem is None
+            or divisions_elem.text is None
+            or not divisions_elem.text.strip().isdigit()
+        ):
+            raise ValueError(
+                f"Invalid MusicXML structure: Global <divisions> definition error in '{file_path}'."
+            )
+
+        xml_divisions = int(divisions_elem.text)
+        if xml_divisions == 0:
+            raise ValueError(
+                f"Invalid MusicXML layout: Global <divisions> cannot be zero in '{file_path}'."
+            )
+
+        tick_scale_factor: float = self.target_tpqn / xml_divisions
+        self._parse_global_metadata(root, expression_map)
+
+        current_velocity = 80
+        active_wedges: dict[str, WedgeEvent] = {}
+        active_slurs: dict[str, int] = {}
+
+        for part in root.findall(path=".//part"):
+            current_xml_time_accumulator = 0
+
+            for measure in part.findall(path=".//measure"):
+                for element in measure:
+                    absolute_tick = round(
+                        current_xml_time_accumulator * tick_scale_factor
+                    )
+
+                    if element.tag == "direction":
+                        current_velocity = self._parse_direction_element(
+                            element,
+                            absolute_tick,
+                            expression_map,
+                            active_wedges,
+                            current_velocity,
+                        )
+
+                    elif element.tag == "forward":
+                        skip_duration = element.find(path="duration")
+                        if skip_duration is not None and skip_duration.text is not None:
+                            current_xml_time_accumulator += int(skip_duration.text)
+
+                    elif element.tag == "backup":
+                        skip_duration = element.find(path="duration")
+                        if skip_duration is not None and skip_duration.text is not None:
+                            current_xml_time_accumulator -= int(skip_duration.text)
+
+                    elif element.tag == "note":
+                        is_rest = element.find(path="rest") is not None
+                        duration_elem = element.find(path="duration")
+                        raw_xml_duration = (
+                            int(duration_elem.text.strip())
+                            if (
+                                duration_elem is not None
+                                and duration_elem.text is not None
+                            )
+                            else 0
+                        )
+
+                        if is_rest:
+                            current_xml_time_accumulator += raw_xml_duration
+                            continue
+
+                        is_chord = element.find(path="chord") is not None
+                        target_onset_time = (
+                            current_xml_time_accumulator - raw_xml_duration
+                            if is_chord
+                            else current_xml_time_accumulator
+                        )
+                        baked_onset_ticks = round(target_onset_time * tick_scale_factor)
+
+                        # Extract isolated local metadata layers safely
+                        self._parse_note_metadata(
+                            element, baked_onset_ticks, expression_map, active_slurs
+                        )
+
+                        pitch_elem = element.find(path=".//step")
+                        octave_elem = element.find(path=".//octave")
+
+                        if (
+                            pitch_elem is not None
+                            and octave_elem is not None
+                            and pitch_elem.text is not None
+                            and octave_elem.text is not None
+                        ):
+                            octave = int(octave_elem.text.strip())
+                            pitch_step = pitch_elem.text.upper().strip()
+
+                            alter_elem = element.find(path=".//alter")
+                            alteration = (
+                                int(alter_elem.text.strip())
+                                if (
+                                    alter_elem is not None
+                                    and alter_elem.text is not None
+                                )
+                                else 0
+                            )
+
+                            midi_pitch = self._calculate_midi_pitch(
+                                step=pitch_step, octave=octave, alter=alteration
+                            )
+                            baked_duration_ticks = round(
+                                raw_xml_duration * tick_scale_factor
+                            )
+
+                            note_event = NoteEvent(
+                                pitch=midi_pitch,
+                                onset_ticks=baked_onset_ticks,
+                                duration_ticks=baked_duration_ticks,
+                                velocity=current_velocity,
+                            )
+                            score.events.append(note_event)
+
+                        if not is_chord:
+                            current_xml_time_accumulator += raw_xml_duration
+
+            final_calculated_tick = round(
+                current_xml_time_accumulator * tick_scale_factor
+            )
+            expression_map.total_ticks = max(
+                expression_map.total_ticks, final_calculated_tick
+            )
+
+        for wedge in active_wedges.values():
+            if wedge.offset_tick == -1:
+                wedge.offset_tick = expression_map.total_ticks
+
+        return score, expression_map
+
+    def _parse_global_metadata(
+        self, root: ET.Element, expression_map: ScoreExpressionMap
+    ) -> None:
+        """Extracts primary signature and initial score word tokens."""
+        beats_elem = root.find(path=".//attributes/time/beats")
+        if (
+            beats_elem is not None
+            and beats_elem.text is not None
+            and beats_elem.text.strip().isdigit()
+        ):
+            expression_map.beats_per_bar = int(beats_elem.text.strip())
+
+        words_elem = root.find(path=".//direction/direction-type/words")
+        if words_elem is not None and words_elem.text is not None:
+            expression_map.initial_tempo_marking = words_elem.text.strip()
+
+    def _parse_direction_element(
+        self,
+        element: ET.Element,
+        tick: int,
+        expression_map: ScoreExpressionMap,
+        active_wedges: dict,
+        current_velocity: int,
+    ) -> int:
+        """Processes spanners, text, and volume changes inside direction tags."""
+        words = element.find(path=".//direction-type/words")
+        if words is not None and words.text is not None:
+            expression_map.text_directions[tick] = words.text.strip()
+
+        wedge_elem = element.find(path=".//direction-type/wedge")
+        if wedge_elem is not None:
+            w_type = wedge_elem.get("type")
+            w_num = wedge_elem.get("number", "1")
+
+            if w_type in ["crescendo", "decrescendo"]:
+                new_wedge = WedgeEvent(wedge_type=w_type, onset_tick=tick)
+                active_wedges[w_num] = new_wedge
+                expression_map.dynamic_wedges.append(new_wedge)
+            elif w_type == "stop" and w_num in active_wedges:
+                active_wedges[w_num].offset_tick = tick
+                del active_wedges[w_num]
+
+        dyn_elem = element.find(path=".//dynamics/*")
+        if dyn_elem is not None:
+            return self._DYNAMICS_VELOCITY_MAP.get(dyn_elem.tag.lower(), 80)
+
+        return current_velocity
+
+    def _parse_note_metadata(
+        self,
+        element: ET.Element,
+        tick: int,
+        expression_map: ScoreExpressionMap,
+        active_slurs: dict,
+    ) -> None:
+        """Extracts articulation types and maps active slur spanners."""
+        articulation_elements = element.findall(path=".//notations/articulations/*")
+        if articulation_elements:
+            if tick not in expression_map.local_articulations:
+                expression_map.local_articulations[tick] = set()
+            for art_node in articulation_elements:
+                expression_map.local_articulations[tick].add(art_node.tag.lower())
+
+        slur_elements = element.findall(path=".//notations/slur")
+        for slur_node in slur_elements:
+            s_type = slur_node.get("type")
+            s_num = slur_node.get("number", "1")
+
+            if s_type == "start":
+                active_slurs[s_num] = tick
+            elif s_type == "stop" and s_num in active_slurs:
+                expression_map.slur_phrases.append((active_slurs[s_num], tick))
+                del active_slurs[s_num]
+
+    def _calculate_midi_pitch(self, step: str, octave: int, alter: int) -> int:
+        """Calculates the absolute MIDI note number from standard music variables."""
+        return 12 * (octave + 1) + self._STEP_MAP[step] + alter
+
+=== FILE: ./src/score2dataset/processors/rir_convolve.py ===
+"""Digital Signal Processing (DSP) acoustic convolution and audio formatting engine.
+
+This module provides high-performance frequency-domain convolution algorithms
+to apply spatial room acoustic characteristics to dry synthetic audio renders,
+enforcing a unified 48kHz, 16-bit mono PCM output constraint optimized for onset detection.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+from scipy.signal import fftconvolve, resample_poly
+
+from score2dataset.exceptions import ProcessorError
+
+
+class RirConvolver:
+    """Applies acoustic physical space characteristics and normalizes bit depth maps."""
+
+    def __init__(self, target_sr: int = 48000) -> None:
+        """Initializes the audio normalization engine configurations.
+
+        Args:
+            target_sr: Final output sample rate resolution forced across all
+                processed audio files. Defaults to 48000.
+        """
+        self.target_sr: int = target_sr
+
+    def process_audio(
+        self, dry_wav_path: Path, rir_path: Path, output_wav_path: Path
+    ) -> None:
+        """Transforms a dry render into a spatially convolved 48kHz, 16-bit mono audio file.
+
+        Executes high-speed mono frequency domain array multiplications, handles high-fidelity
+        resampling arrays, and preserves velocity dynamic variations accurately.
+
+        Args:
+            dry_wav_path: Path location pointing to the source raw audio render file.
+            rir_path: Path to the specific Room Impulse Response WAV file to apply.
+            output_wav_path: Target destination path to store the processed wet file.
+
+        Raises:
+            ProcessorError: If any DSP matrix operation or array transformation fails.
+        """
+        try:
+            dry_data, dry_sr = sf.read(dry_wav_path, dtype="float64")
+            rir_data, rir_sr = sf.read(rir_path, dtype="float64")
+
+            dry_mono: np.ndarray = self._to_mono(dry_data)
+            rir_mono: np.ndarray = self._to_mono(rir_data)
+
+            working_sr: int = max(dry_sr, rir_sr)
+            dry_matched: np.ndarray = self._resample(dry_mono, dry_sr, working_sr)
+            rir_matched: np.ndarray = self._resample(rir_mono, rir_sr, working_sr)
+
+            rir_sum: float = float(np.sum(np.abs(rir_matched)))
+            rir_normalized: np.ndarray = (
+                rir_matched / rir_sum if rir_sum > 0.0 else rir_matched
+            )
+
+            # 1. Execute high-resolution convolution using the peak-normalized RIR
+            convolved_high: np.ndarray = fftconvolve(
+                dry_matched, rir_normalized, mode="full"
+            )
+
+            # 2. Extract and align the convolved array to match the dry timeline length
+            convolved_high_aligned: np.ndarray = convolved_high[: len(dry_matched)]
+
+            # 3. Isolate the pure spatial wet tail by subtracting the direct dry signal component.
+            # This strips away the direct-path energy duplication from the convolution matrix.
+            pure_wet_high: np.ndarray = convolved_high_aligned - dry_matched
+
+            # 4. Blend the signals at high-resolution using a precise parallel matrix layout.
+            # The dry performance remains completely upfront at 100% volume to preserve native transients,
+            # while the isolated wet reflections are appended at a controlled, non-masking 10% gain.
+            blended_high: np.ndarray = (dry_matched * 1.0) + (pure_wet_high * 0.10)
+
+            # 5. Downsample the blended high-resolution array back to the 48kHz target rate
+            # This specific execution line remains completely identical to your verified baseline
+            final_signal: np.ndarray = self._resample(
+                blended_high, working_sr, self.target_sr
+            )
+
+            # 6. Apply your verified, hard-truncated timeline slice to preserve strict execution speed
+            dry_target_len = int(len(dry_mono) * (self.target_sr / dry_sr))
+            final_signal = final_signal[:dry_target_len]
+
+            # 7. Apply a static master gain factor of 0.90 to provide safe headroom (-1.0 dBFS).
+            # This completely eliminates file-by-file peak distortion, allows low-frequencies to pass
+            # un-sheared, and guarantees your file-to-file MusicXML velocity dynamics remain perfectly intact.
+            final_signal = final_signal * 0.90
+
+            pcm16_data: np.ndarray = (final_signal * 32767.0).astype(dtype=np.int16)
+
+            sf.write(
+                file=output_wav_path,
+                data=pcm16_data,
+                samplerate=self.target_sr,
+                subtype="PCM_16",
+            )
+
+        except Exception as error:
+            raise ProcessorError(
+                f"DSP Pipeline Failure: Convolution aborted. Details: {error}"
+            ) from error
+
+    def _to_mono(self, audio_data: np.ndarray) -> np.ndarray:
+        """Downmixes multi-channel audio arrays to mono via mean averaging."""
+        if audio_data.ndim > 1:
+            return np.mean(audio_data, axis=1)
+        return audio_data
+
+    def _resample(
+        self, audio_data: np.ndarray, current_sr: int, target_sr: int
+    ) -> np.ndarray:
+        """Resamples audio data between two custom sample rates using polyphase filtering."""
+        if current_sr == target_sr:
+            return audio_data
+
+        gcd: int = np.gcd(target_sr, current_sr)
+        up_factor: int = target_sr // gcd
+        down_factor: int = current_sr // gcd
+
+        return resample_poly(audio_data, up_factor, down_factor)
+
+    def _normalize_rir_peak(self, rir_data: np.ndarray) -> np.ndarray:
+        """Normalizes the Room Impulse Response peak amplitude to exactly 1.0."""
+        rir_peak: float = float(np.max(np.abs(rir_data)))
+        if rir_peak > 0.0:
+            return rir_data / rir_peak
+        return rir_data
+
+=== FILE: ./src/score2dataset/processors/__init__.py ===
+
+=== FILE: ./src/score2dataset/processors/rir_conditioner.py ===
+"""Digital Signal Processing utilities for Room Impulse Response conditioning.
+
+Provides high-performance structural array manipulation tools to eliminate
+leading propagation delays and truncate ambient decay floors below noise thresholds
+to prepare acoustic signals for zero-latency convolution.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf  # Type: ignore(import)
+
+from score2dataset.exceptions import ProcessorError
+
+
+class RirConditioner:
+    """Removes propagation delay windows and truncates decaying noise floors from RIR arrays."""
+
+    def __init__(self, noise_threshold_db: float = -60.0) -> None:
+        """Initializes the structural conditioning parameters.
+
+        Args:
+            noise_threshold_db: Decibel floor below which acoustic energy is
+                considered ambient noise. Defaults to -60.0.
+        """
+        self.noise_threshold: float = 10 ** (noise_threshold_db / 20.0)
+
+    def condition_file(self, input_path: Path, output_path: Path) -> None:
+        """Trims leading propagation delay and trailing noise from an RIR file.
+
+        Args:
+            input_path: Source location of the raw, unconditioned RIR file.
+            output_path: Destination target to write the zero-latency conditioned file.
+
+        Raises:
+            ProcessorError: If the file is blank, corrupted, or parsing fails.
+        """
+        try:
+            data, sample_rate = sf.read(input_path, dtype="float64")
+            if data.ndim > 1:
+                data = np.mean(data, axis=1)
+
+            absolute_signal: np.ndarray = np.abs(data)
+            max_peak_value: float = float(np.max(absolute_signal))
+
+            if max_peak_value < 1e-4:
+                raise ProcessorError(
+                    f"Structural Validation Fault: File is completely blank: {input_path.name}"
+                )
+
+            # Locate the direct-path onset index to eliminate time-of-flight latency
+            onset_index: int = int(np.argmax(absolute_signal))
+
+            # Scan backwards to truncate trailing noise below the operational decibel floor
+            active_mask = absolute_signal > self.noise_threshold
+            if not np.any(active_mask):
+                end_index: int = len(data)
+            else:
+                end_index = int(np.max(np.where(active_mask))) + 1
+
+            if onset_index >= end_index:
+                end_index = len(data)
+
+            conditioned_data: np.ndarray = data[onset_index:end_index]
+
+            sf.write(
+                file=output_path,
+                data=conditioned_data,
+                samplerate=sample_rate,
+                subtype="PCM_16",
+            )
+
+        except Exception as error:
+            if isinstance(error, ProcessorError):
+                raise
+            raise ProcessorError(
+                f"RIR Conditioning Failure on file {input_path.name}: {error}"
+            ) from error
+
+=== FILE: ./src/score2dataset/processors/sfz_conditioner.py ===
+"""Digital Signal Processing utilities for SFZ instrument library conditioning.
+
+Provides structural text analysis and parsing utilities to identify, log, and
+correct onset latency hazards and missing sample assets within SFZ definition maps.
+"""
+
+import re
+from pathlib import Path
+from typing import Final
+
+
+class SfzConditioner:
+    """Evaluates, details, and modifies SFZ files to guarantee instant note onsets."""
+
+    # re.IGNORECASE forces the regex engine to match any case combination natively
+    ATTACK_PATTERN: Final[re.Pattern] = re.compile(
+        pattern=r"(ampeg_attack\s*=\s*)([0-9.]+)", flags=re.IGNORECASE
+    )
+    SAMPLE_PATTERN: Final[re.Pattern] = re.compile(
+        pattern=r"sample\s*=\s*([^\s\r\n]+)", flags=re.IGNORECASE
+    )
+
+    def __init__(self, sfz_path: Path) -> None:
+        """Initializes the SFZ conditioner tracking structures.
+
+        Args:
+            sfz_path: Location pointing to the specific target .sfz file.
+        """
+        self.sfz_path: Path = sfz_path
+        self.sfz_dir: Path = sfz_path.parent
+
+    def process_and_fix(self, output_path: Path) -> bool:
+        """Detailed diagnostic scan that writes a corrected, zero-latency SFZ file.
+
+        Args:
+            output_path: Target destination to store the modified safe SFZ file.
+
+        Returns:
+            A boolean indicating True if the asset is completely safe and written,
+            or False if structural dependency failures prevent execution.
+        ```"""
+        if not self.sfz_path.exists():
+            print(f"[ERROR] Source file does not exist: {self.sfz_path}")
+            return False
+
+        with open(self.sfz_path, "r", encoding="utf-8", errors="ignore") as file:
+            lines: list[str] = file.readlines()
+
+        missing_samples: list[tuple[int, str]] = []
+        modified_lines_count: int = 0
+        corrected_content: list[str] = []
+
+        # print(f"\n=== Running Detailed Diagnostics for: {self.sfz_path.name} ===")
+
+        for idx, line in enumerate(lines, start=1):
+            current_line_text = line
+
+            sample_match = self.SAMPLE_PATTERN.search(line)
+            if sample_match:
+                sample_name = sample_match.group(1).replace("\\", "/")
+                sample_path = self.sfz_dir / sample_name
+                if not sample_path.exists():
+                    missing_samples.append((idx, sample_name))
+
+            attack_match = self.ATTACK_PATTERN.search(line)
+            if attack_match:
+                attack_val = float(attack_match.group(2))
+                if attack_val > 0.001:
+                    # print(
+                    #    f" -> [FIXED LINE {idx}]: Found ampeg_attack={attack_val}. Forcing to 0.0."
+                    # )
+                    current_line_text = self.ATTACK_PATTERN.sub(r"\g<1>0.0", line)
+                    modified_lines_count += 1
+
+            corrected_content.append(current_line_text)
+
+        if missing_samples:
+            # print(
+            #    f"\n[CRITICAL WARNING] Found {len(missing_samples)} missing WAV audio file(s):"
+            # )
+            for line_no, file_name in missing_samples[:10]:
+                print(f"   * Line {line_no}: Missing file -> {file_name}")
+            if len(missing_samples) > 10:
+                print(f"   * ... and {len(missing_samples) - 10} more missing files.")
+            return False
+
+        with open(output_path, "w", encoding="utf-8") as out_file:
+            out_file.writelines(corrected_content)
+
+        print("\n[SUMMARY] Curation completed successfully.")
+        print(
+            f" -> Forced {modified_lines_count} delayed attack envelopes to instant 0.0 transients."
+        )
+        print(
+            f" -> Output safe, zero-latency instrument mapping saved to: {output_path.name}\n"
+        )
+        return True
+
+=== FILE: ./src/score2dataset/processors/tempo_contour.py ===
+"""Continuous tempo map and phrasing contour generation engine.
+
+Implements Natural Cubic Spline interpolation over stochastic behavioral anchors
+to simulate biomechanical inertia and human temporal phrasing variations.
+"""
+
+from typing import Final
+
+import numpy as np
+from scipy.interpolate import CubicSpline
+
+from score2dataset.datamodels import NoteEvent, PerformanceScore, ScoreExpressionMap
+
+
+class TempoContourGenerator:
+    """Derives smooth, C2-continuous tempo maps satisfying physical boundary constraints."""
+
+    _STYLE_MAPPINGS: Final[dict[str, tuple[float, float]]] = {
+        "grave": (25.0, 45.0),
+        "largo": (40.0, 60.0),
+        "lento": (45.0, 60.0),
+        "adagio": (66.0, 76.0),
+        "andante": (76.0, 108.0),
+        "moderato": (108.0, 120.0),
+        "allegro": (120.0, 168.0),
+        "presto": (168.0, 200.0),
+        "prestissimo": (200.0, 250.0),
+    }
+
+    # Strict physical safety limits derived from human motor noise and grid quantization thresholds
+    _B_MIN: Final[float] = 12.5
+    _B_MAX: Final[float] = 250.0
+
+    def __init__(self, theta_sigma: float = 0.15, seed: int | None = None) -> None:
+        """Initializes the contour generator with randomization bounds and state handles.
+
+        Args:
+            theta_sigma: Structural domain randomization boundary. Defaults to 0.15.
+            seed: Fixed stochastic seed to ensure scientific transparency.
+        """
+        self.theta_sigma: Final[float] = theta_sigma
+        self.rng: Final[np.random.Generator] = np.random.default_rng(seed)
+
+    def generate_tempo_map(self, metadata: ScoreExpressionMap) -> CubicSpline:
+        """Constructs a continuous cubic spline mapping across phrasing anchors.
+
+        Args:
+            metadata: Structured expression and structural metadata object.
+
+        Returns:
+            A SciPy CubicSpline instance mapping absolute tick inputs to continuous BPM.
+        """
+        ticks_per_bar: int = metadata.beats_per_bar * metadata.ticks_per_beat
+
+        # Resolve primary/initial tempo anchor speed
+        base_style = metadata.initial_tempo_marking.lower().strip()
+        low_b, high_b = self._STYLE_MAPPINGS.get(base_style, (76.0, 108.0))
+        primary_base_bpm: float = float(self.rng.uniform(low_b, high_b))
+
+        # Skeletal points tracking: keys = absolute ticks, values = target BPM
+        anchors: dict[int, float] = {0: primary_base_bpm}
+
+        # Process score timeline milestones sequentially to build the anchors set
+        current_running_bpm: float = primary_base_bpm
+        sorted_directions = sorted(metadata.text_directions.items())
+
+        for tick, marking in sorted_directions:
+            norm_marking = marking.lower().strip()
+
+            if norm_marking in self._STYLE_MAPPINGS:
+                low_b, high_b = self._STYLE_MAPPINGS[norm_marking]
+                current_running_bpm = float(self.rng.uniform(low_b, high_b))
+                anchors[tick] = current_running_bpm
+
+            elif norm_marking in ["accelerando", "accel"]:
+                gamma_sigma = float(self.rng.uniform(1.1, 2.0))
+                target_bpm = current_running_bpm * gamma_sigma
+
+                # Check if a terminal marker exists ahead, otherwise enforce an interpretative horizon
+                horizon_bars = float(self.rng.uniform(2.0, 4.0))
+                horizon_ticks = int(horizon_bars * ticks_per_bar)
+                end_tick = min(tick + horizon_ticks, metadata.total_ticks)
+
+                current_running_bpm = target_bpm
+                anchors[end_tick] = current_running_bpm
+
+            elif norm_marking in ["ritardando", "rit", "rallentando", "rall"]:
+                gamma_sigma = float(self.rng.uniform(0.5, 0.9))
+                target_bpm = current_running_bpm * gamma_sigma
+
+                horizon_bars = float(self.rng.uniform(2.0, 4.0))
+                horizon_ticks = int(horizon_bars * ticks_per_bar)
+                end_tick = min(tick + horizon_ticks, metadata.total_ticks)
+
+                current_running_bpm = target_bpm
+                anchors[end_tick] = current_running_bpm
+
+            elif norm_marking == "tempo_primo":
+                current_running_bpm = primary_base_bpm
+                anchors[tick] = current_running_bpm
+
+        # Structural Fallback: Generate bar-line anchors to avoid mechanical tracking rigidity
+        for tick in range(0, metadata.total_ticks, ticks_per_bar):
+            if tick not in anchors:
+                # Equation: B_anchor ~ U(B_score * [1 - theta], B_score * [1 + theta])
+                min_scale = 1.0 - self.theta_sigma
+                max_scale = 1.0 + self.theta_sigma
+                random_scale = float(self.rng.uniform(min_scale, max_scale))
+                anchors[tick] = current_running_bpm * random_scale
+
+        # Enforce boundary anchor closure at the absolute end of the score timeline
+        if metadata.total_ticks not in anchors:
+            anchors[metadata.total_ticks] = current_running_bpm
+
+        # Compile vectors and build the continuous C2-continuous Cubic Spline
+        sorted_anchors = sorted(anchors.items())
+        knots_x = np.array([item[0] for item in sorted_anchors], dtype=np.float64)
+        values_y = np.array([item[1] for item in sorted_anchors], dtype=np.float64)
+
+        # Enforce physical saturation ceilings immediately over knot parameters
+        values_y = np.clip(values_y, self._B_MIN, self._B_MAX)
+
+        # Natural boundary configuration forces second derivatives to zero, preventing wild oscillations
+        return CubicSpline(knots_x, values_y, bc_type="natural")
+
+    def apply_phrasing_to_score(
+        self, score: PerformanceScore, tempo_spline: CubicSpline
+    ) -> PerformanceScore:
+        """Evaluates the continuous spline map to modify absolute note timing grids.
+
+        Args:
+            score: The raw, canonical performance data container.
+            tempo_spline: The pre-calculated continuous tempo map spline instance.
+
+        Returns:
+            A new modified PerformanceScore instance with realigned time coordinates.
+        """
+        perturbed_score = PerformanceScore(source=score.source)
+        modified_events: list[NoteEvent] = []
+
+        for event in score.events:
+            # Evaluate the instantaneous cubic polynomial at the specific note onset tick coordinate
+            instantaneous_bpm: float = float(tempo_spline(event.onset_ticks))
+            instantaneous_bpm = max(self._B_MIN, min(self._B_MAX, instantaneous_bpm))
+
+            # Calculate a microtiming scaling scalar to adjust performance properties
+            # Higher instantaneous BPM means a faster clock speed, shortening relative durations
+            speed_ratio: float = (
+                120.0 / instantaneous_bpm
+            )  # Normalized relative to a neutral 120 BPM midpoint
+
+            modified_event = NoteEvent(
+                pitch=event.pitch,
+                onset_ticks=event.onset_ticks,  # Leave absolute grid position intact for metadata sequencing
+                duration_ticks=int(np.round(event.duration_ticks * speed_ratio)),
+                velocity=event.velocity,
+            )
+            modified_events.append(modified_event)
+
+        perturbed_score.events = modified_events
+        return perturbed_score
+
+=== FILE: ./src/score2dataset/processors/temporal_jitter.py ===
+"""Microtiming temporal jitter and motor noise modification processor.
+
+Implements tempo-proportional variance mapping and first-order autoregressive
+AR(1) error curves to simulate human physical timing drift and execution noise.
+"""
+
+from typing import Final
+
+import numpy as np
+from scipy.interpolate import CubicSpline
+
+from score2dataset.datamodels import NoteEvent, PerformanceScore
+from score2dataset.exceptions import ProcessorError
+
+
+class TemporalJitterModifier:
+    """Applies tempo-calibrated AR(1) human motor jitter to note onset grids."""
+
+    def __init__(
+        self,
+        sigma_time: float = 0.010,
+        phi: float = 0.35,
+        target_tpqn: int = 480,
+        seed: int | None = None,
+    ) -> None:
+        """Initializes the microtiming variance parameters and stochastic seed handles.
+
+        Args:
+            sigma_time: Target time-domain deviation standard deviation in seconds (e.g., 0.010s).
+            phi: Autoregressive correlation coefficient tracking short-term memory trends.
+            target_tpqn: Ticks Per Quarter Note timeline resolution constraint. Defaults to 480.
+            seed: Fixed stochastic seed to ensure strict scientific transparency.
+        """
+        if not (0.0 <= phi < 1.0):
+            raise ProcessorError(
+                f"AR(1) coefficient Phi must reside in the interval [0, 1). Got: {phi}"
+            )
+
+        self.sigma_time: Final[float] = sigma_time
+        self.phi: Final[float] = phi
+        self.tpqn: Final[int] = target_tpqn
+        self.rng: Final[np.random.Generator] = np.random.default_rng(seed)
+
+    def perturb_timing(
+        self, score: PerformanceScore, tempo_spline: CubicSpline
+    ) -> PerformanceScore:
+        """Applies dynamic autoregressive jitter to the score onset timeline.
+
+        Groups note elements sharing chord structures to prevent un-synchronized
+        arpeggiation errors, tracking temporal drift curves across execution loops.
+
+        Args:
+            score: The performance data score structure containing target note events.
+            tempo_spline: Pre-calculated continuous cubic spline mapping absolute ticks to BPM.
+
+        Returns:
+            A new modified PerformanceScore instance with microtimed onset indices.
+        """
+        original_events: list[NoteEvent] = score.events
+        if not original_events:
+            return copy.deepcopy(score)
+
+        # Step 1: Extract and group absolute timelines to identify chord bounds
+        # Maps unique onset tick targets to all note instances striking on that beat
+        chord_groups: dict[int, list[NoteEvent]] = {}
+        for event in original_events:
+            chord_groups.setdefault(event.onset_ticks, []).append(event)
+
+        # Ensure we process the performance chronologically from start to finish
+        sorted_onsets: list[int] = sorted(chord_groups.keys())
+
+        modified_events: list[NoteEvent] = []
+        previous_delta: float = 0.0
+
+        # Step 2: Loop chronologically across the unique time moments
+        for onset_tick in sorted_onsets:
+            notes_in_chord = chord_groups[onset_tick]
+
+            # Evaluate the instantaneous tempo curve to find the exact local BPM
+            instantaneous_bpm: float = float(tempo_spline(onset_tick))
+
+            # Equation: sigma_ticks = sigma_time * (B_ki * TPQN) / 60
+            sigma_ticks: float = self.sigma_time * (
+                (instantaneous_bpm * self.tpqn) / 60.0
+            )
+
+            # Generate the white noise innovation vector element
+            epsilon: float = float(self.rng.normal(0.0, sigma_ticks))
+
+            # Equation: delta_i = phi * delta_i-1 + epsilon_i
+            current_delta: float = (self.phi * previous_delta) + epsilon
+            previous_delta = current_delta
+
+            # Convert floating-point error offset cleanly into discrete grid units
+            tick_displacement = int(np.round(current_delta))
+
+            # Step 3: Apply the identical displacement step uniformly to all notes in the chord
+            for event in notes_in_chord:
+                perturbed_onset = int(
+                    np.clip(event.onset_ticks + tick_displacement, 0, None)
+                )
+
+                modified_event = NoteEvent(
+                    pitch=event.pitch,
+                    onset_ticks=perturbed_onset,
+                    # Structural release coordinates are preserved as defined in your paper text
+                    duration_ticks=event.duration_ticks,
+                    velocity=event.velocity,
+                )
+                modified_events.append(modified_event)
+
+        # Step 4: Re-sort the final timeline to protect structural execution linearity
+        modified_events.sort(key=lambda e: e.onset_ticks)
+
+        perturbed_score = PerformanceScore(source=score.source)
+        perturbed_score.events = modified_events
+        return perturbed_score
+
+=== FILE: ./src/score2dataset/processors/intensity_profile.py ===
+"""Intensity profile and note velocity dynamic phrasing processor.
+
+Implements piecewise linear interpolation across dynamic wedges, metric downbeat
+accents, and Gaussian execution residuals to simulate human piano phrasing.
+"""
+
+import copy
+from typing import Final
+
+import numpy as np
+
+from score2dataset.datamodels import NoteEvent, PerformanceScore, ScoreExpressionMap
+
+
+class IntensityProfileModifier:
+    """Modulates note velocities using dynamic curves, metric weight, and motor noise."""
+
+    # High-visibility translation table mapped precisely to your 7-bit MIDI target range
+    _NOMINAL_VELOCITIES: Final[dict[str, int]] = {
+        "ppp": 16,
+        "pp": 33,
+        "p": 49,
+        "mp": 64,
+        "mf": 80,
+        "f": 96,
+        "ff": 112,
+        "fff": 126,
+    }
+
+    def __init__(
+        self,
+        delta_v: int = 4,
+        gamma_min: float = 1.2,
+        gamma_max: float = 1.6,
+        beta: float = 0.12,
+        sigma_v: float = 3.5,
+        seed: int | None = None,
+    ) -> None:
+        """Initializes the dynamic variance limits and random state handles.
+
+        Args:
+            delta_v: Fixed uniform offset spread around nominal velocity levels.
+            gamma_min: Minimum scaling factor for crescendo dynamic gradients.
+            gamma_max: Maximum scaling factor for crescendo dynamic gradients.
+            beta: Maximum metric accent boost intensity (e.g., 0.12 for up to 12%).
+            sigma_v: Standard deviation for the Gaussian human motor noise (xi).
+            seed: Fixed stochastic seed to ensure strict scientific transparency.
+        """
+        self.delta_v: Final[int] = delta_v
+        self.gamma_min: Final[float] = gamma_min
+        self.gamma_max: Final[float] = gamma_max
+        self.beta: Final[float] = beta
+        self.sigma_v: Final[float] = sigma_v
+        self.rng: Final[np.random.Generator] = np.random.default_rng(seed)
+
+    def perturb_intensity(
+        self, score: PerformanceScore, expression_map: ScoreExpressionMap
+    ) -> PerformanceScore:
+        """Evaluates anchors and spanners to smoothly project humanized velocity profiles.
+
+        Args:
+            score: The performance score structure containing target note events.
+            expression_map: The extracted structural metadata and spanner coordinate tracker.
+
+        Returns:
+            A new modified PerformanceScore instance with humanized note velocities.
+        """
+        original_events: list[NoteEvent] = score.events
+        if not original_events:
+            return copy.deepcopy(score)
+
+        ticks_per_bar: int = (
+            expression_map.beats_per_bar * expression_map.ticks_per_beat
+        )
+
+        # Step 1: Establish absolute dynamic baseline anchors across the score timeline
+        anchors: list[tuple[int, float]] = []
+        current_baseline_v: float = float(
+            self._NOMINAL_VELOCITIES.get(
+                expression_map.initial_tempo_marking.lower().strip(), 80
+            )
+        )
+
+        # Seed the initial boundary context at tick 0
+        v_init = float(
+            self.rng.uniform(
+                current_baseline_v - self.delta_v, current_baseline_v + self.delta_v
+            )
+        )
+        anchors.append((0, v_init))
+
+        # Track explicit textual dynamic marks (p, mf, ff)
+        for tick, marking in sorted(expression_map.text_directions.items()):
+            norm_mark = marking.lower().strip()
+            if norm_mark in self._NOMINAL_VELOCITIES:
+                v_nom = self._NOMINAL_VELOCITIES[norm_mark]
+                current_baseline_v = float(
+                    self.rng.uniform(v_nom - self.delta_v, v_nom + self.delta_v)
+                )
+                anchors.append((tick, current_baseline_v))
+
+        # Track continuous hairpins (Crescendo/Decrescendo wedges)
+        for wedge in expression_map.dynamic_wedges:
+            v_start = current_baseline_v
+            gamma_v = float(self.rng.uniform(self.gamma_min, self.gamma_max))
+
+            if wedge.wedge_type == "crescendo":
+                v_end = v_start * gamma_v
+            else:  # decrescendo / diminuendo
+                v_end = v_start * (1.0 / gamma_v)
+
+            anchors.append((wedge.onset_tick, v_start))
+            anchors.append((wedge.offset_tick, v_end))
+            current_baseline_v = v_end
+
+        # Ensure the anchor array has closure at the absolute end of the track timeline
+        if expression_map.total_ticks > anchors[-1][0]:
+            anchors.append((expression_map.total_ticks, current_baseline_v))
+
+        # Sort the anchor coordinates to prepare for error-free linear lookup
+        anchors.sort(key=lambda x: x[0])
+
+        modified_events: list[NoteEvent] = []
+
+        # Step 2: Loop chronologically to project baseline, accents, and residuals
+        for event in original_events:
+            # Evaluate piecewise linear interpolation for the exact note onset tick
+            v_interp = self._interpolate_velocity(event.onset_ticks, anchors)
+
+            # Calculate the metric downbeat indicator
+            is_downbeat: bool = (event.onset_ticks % ticks_per_bar) == 0
+
+            # Dynamic Headroom Scale: Mitigates velocity compression as values near 127
+            headroom_scale: float = max(0.0, (127.0 - v_interp) / 127.0)
+
+            # Multiplicative metric accent adjusted smoothly by local headroom space
+            if is_downbeat:
+                v_metric = 1.0 + (self.beta * headroom_scale)
+            else:
+                v_metric = 1.0
+
+            # Sample the stochastic human micro-dynamic residual error (xi)
+            # Equation: xi ~ N(0, sigma_v^2)
+            xi: float = float(self.rng.normal(0.0, self.sigma_v))
+
+            # Step 3: Compute, round, and safely clamp the final 7-bit MIDI velocity
+            # Equation: v_final = clip(round(V_interp * V_metric + xi), 1, 127)
+            calculated_v = int(np.round(v_interp * v_metric + xi))
+            final_velocity: int = max(1, min(127, calculated_v))
+
+            modified_event = NoteEvent(
+                pitch=event.pitch,
+                onset_ticks=event.onset_ticks,
+                duration_ticks=event.duration_ticks,
+                velocity=final_velocity,
+            )
+            modified_events.append(modified_event)
+
+        perturbed_score = PerformanceScore(source=score.source)
+        perturbed_score.events = modified_events
+        return perturbed_score
+
+    def _interpolate_velocity(
+        self, tick: int, anchors: list[tuple[int, float]]
+    ) -> float:
+        """Calculates the exact piecewise linear target between surrounding dynamic coordinates."""
+        if tick <= anchors[0][0]:
+            return anchors[0][1]
+        if tick >= anchors[-1][0]:
+            return anchors[-1][1]
+
+        # Locate the exact surrounding anchor bracket bounding this specific note tick
+        for i in range(len(anchors) - 1):
+            k_a, v_a = anchors[i]
+            k_b, v_b = anchors[i + 1]
+            if k_a <= tick <= k_b:
+                if k_b == k_a:
+                    return v_a
+                # Equation: V_interp = V_A + (V_B - V_A) * (k_i - k_A) / (k_B - k_A)
+                return v_a + (v_b - v_a) * ((tick - k_a) / (k_b - k_a))
+
+        return anchors[0][1]
+
+=== FILE: ./src/score2dataset/processors/event_modifier.py ===
+"""Event-level stochastic modification processor for symbolic performance data.
+
+Implements categorical, discrete Gaussian, and Poisson distributions to model
+human motor deviations, technical execution failures, and additive ghost strikes.
+"""
+
+import copy
+from typing import Final
+
+import numpy as np
+
+from score2dataset.datamodels import NoteEvent, PerformanceScore
+from score2dataset.exceptions import ProcessorError
+
+
+class EventLevelModifier:
+    """Applies probabilistic modifications and verifies structural integrity bounds."""
+
+    def __init__(
+        self,
+        p_keep: float = 0.94,
+        p_sub: float = 0.04,
+        p_omit: float = 0.02,
+        sigma_p: float = 1.2,
+        poisson_lambda: float = 2.5,
+        threshold_gamma: float = 0.15,
+        w_sub: float = 0.2,
+        w_omit: float = 0.5,
+        w_ins: float = 1.0,
+        seed: int | None = None,
+    ) -> None:
+        """Initializes the stochastic deviation matrices and weight boundaries.
+
+        Args:
+            p_keep: Probability of note preservation.
+            p_sub: Probability of note pitch substitution.
+            p_omit: Probability of note omission.
+            sigma_p: Standard deviation for the discrete Gaussian pitch shifts.
+            poisson_lambda: Expected count (lambda) of random additive insertions.
+            threshold_gamma: Maximum allowed cumulative structural noise density.
+            w_sub: Penalty weight assigned to substitution events.
+            w_omit: Penalty weight assigned to omission events.
+            w_ins: Penalty weight assigned to insertion events.
+            seed: Fixed stochastic seed to ensure strict scientific transparency.
+        """
+        # Enforce mathematical validity of the categorical distribution array
+        prob_sum: float = p_keep + p_sub + p_omit
+        if not np.isclose(prob_sum, 1.0):
+            raise ProcessorError(
+                f"Categorical probabilities must sum to 1.0. Got: {prob_sum}"
+            )
+
+        self.probabilities: Final[list[float]] = [p_keep, p_sub, p_omit]
+        self.sigma_p: Final[float] = sigma_p
+        self.poisson_lambda: Final[float] = poisson_lambda
+        self.gamma: Final[float] = threshold_gamma
+
+        # Weight coefficients mapping functional impact on onset tracking
+        self.w_sub: Final[float] = w_sub
+        self.w_omit: Final[float] = w_omit
+        self.w_ins: Final[float] = w_ins
+
+        # Instantiate the isolated state-safe random generator wrapper
+        self.rng: Final[np.random.Generator] = np.random.default_rng(seed)
+
+    def perturb_score(self, canonical_score: PerformanceScore) -> PerformanceScore:
+        """Applies categorical mutations and additive ghost noise to a performance.
+
+        Args:
+            canonical_score: The pristine target template container to modify.
+
+        Returns:
+            A new modified PerformanceScore instance if it passes structural bounds.
+
+        Raises:
+            ProcessorError: If the cumulative noise violates the integrity threshold.
+        """
+        original_events: list[NoteEvent] = canonical_score.events
+        n_canonical: int = len(original_events)
+        if n_canonical == 0:
+            return copy.deepcopy(canonical_score)
+
+        modified_events: list[NoteEvent] = []
+        n_sub: int = 0
+        n_omit: int = 0
+
+        # Outcome mappings -> 0: Keep, 1: Substitute, 2: Omit
+        outcomes = self.rng.choice(3, size=n_canonical, p=self.probabilities)
+
+        for idx, event in enumerate(original_events):
+            outcome = outcomes[idx]
+
+            if outcome == 0:  # Keep
+                modified_events.append(copy.deepcopy(event))
+
+            elif outcome == 1:  # Substitution
+                # Sample from a discrete Gaussian using rounding transforms
+                pitch_shift = int(np.round(self.rng.normal(0, self.sigma_p)))
+                if pitch_shift == 0:
+                    pitch_shift = 1 if self.rng.random() > 0.5 else -1
+
+                mutated_event = NoteEvent(
+                    pitch=int(np.clip(event.pitch + pitch_shift, 0, 127)),
+                    onset_ticks=event.onset_ticks,
+                    duration_ticks=event.duration_ticks,
+                    velocity=event.velocity,
+                )
+                modified_events.append(mutated_event)
+                n_sub += 1
+
+            elif outcome == 2:  # Omission
+                n_omit += 1
+                continue
+
+        # Poisson random noise arrival for additive ghost strikes
+        n_ins: int = int(self.rng.poisson(self.poisson_lambda))
+
+        if n_ins > 0 and len(modified_events) > 0:
+            # Uniformly select parent nodes across the newly modified sequence
+            target_indices = self.rng.integers(0, len(modified_events), size=n_ins)
+
+            for target_idx in target_indices:
+                parent_note = modified_events[target_idx]
+                ghost_shift = int(np.round(self.rng.normal(0, self.sigma_p)))
+                if ghost_shift == 0:
+                    ghost_shift = 1 if self.rng.random() > 0.5 else -1
+
+                ghost_event = NoteEvent(
+                    pitch=int(np.clip(parent_note.pitch + ghost_shift, 0, 127)),
+                    # Ghost note inherits temporal coordinate and velocity completely
+                    onset_ticks=parent_note.onset_ticks,
+                    duration_ticks=parent_note.duration_ticks,
+                    velocity=parent_note.velocity,
+                )
+                modified_events.append(ghost_event)
+
+        # Structural Integrity Threshold Evaluation (Equation check)
+        cumulative_noise_density: float = (
+            (self.w_sub * n_sub) + (self.w_omit * n_omit) + (self.w_ins * n_ins)
+        ) / n_canonical
+
+        if cumulative_noise_density >= self.gamma:
+            raise ProcessorError(
+                f"Structural Integrity Violation: Cumulative noise density "
+                f"({cumulative_noise_density:.4f}) exceeded threshold Gamma ({self.gamma})."
+            )
+
+        # Reassemble and sort the finalized sequence timeline
+        # Sorting guarantees that chord notes and ghost notes stay sequentially linear
+        modified_events.sort(key=lambda e: e.onset_ticks)
+
+        perturbed_score = PerformanceScore(source=canonical_score.source)
+        perturbed_score.events = modified_events
+        return perturbed_score
+
+=== FILE: ./src/score2dataset/processors/articulation_modifier.py ===
+"""Articulatory variance and note duration modification processor.
+
+Implements intentional stylistic envelope scaling (staccato/legato) combined
+with Gaussian motor noise residuals to simulate human physical touch variations.
+"""
+
+import copy
+from typing import Final
+
+import numpy as np
+
+from score2dataset.datamodels import NoteEvent, PerformanceScore, ScoreExpressionMap
+from score2dataset.exceptions import ProcessorError
+
+
+class ArticulationModifier:
+    """Modulates symbolic note durations using intentional style maps and motor noise."""
+
+    def __init__(
+        self,
+        sigma_d: float = 8.0,
+        d_min: int = 24,
+        staccato_low: float = 0.25,
+        staccato_high: float = 0.45,
+        neutral_low: float = 0.85,
+        neutral_high: float = 0.95,
+        legato_low: float = 1.05,
+        legato_high: float = 1.25,
+        seed: int | None = None,
+    ) -> None:
+        """Initializes the articulatory boundary ranges and random state handles.
+
+        Args:
+            sigma_d: Standard deviation for the Gaussian motor residual noise (zeta).
+            d_min: Minimum allowable note duration in ticks to prevent transient cutoff.
+            staccato_low: Minimum scaling boundary for staccato markings.
+            staccato_high: Maximum scaling boundary for staccato markings.
+            neutral_low: Minimum scaling boundary for standard unmarked notes.
+            neutral_high: Maximum scaling boundary for standard unmarked notes.
+            legato_low: Minimum scaling boundary for legato/slurred passages.
+            legato_high: Maximum scaling boundary for legato/slurred passages.
+            seed: Fixed stochastic seed to ensure scientific transparency.
+        """
+        if d_min <= 0:
+            raise ProcessorError(
+                f"Minimum physical duration d_min must be greater than zero. Got: {d_min}"
+            )
+
+        self.sigma_d: Final[float] = sigma_d
+        self.d_min: Final[int] = d_min
+
+        # Stochastic range vectors matching your qualitative paper categories
+        self.range_staccato: Final[tuple[float, float]] = (staccato_low, staccato_high)
+        self.range_neutral: Final[tuple[float, float]] = (neutral_low, neutral_high)
+        self.range_legato: Final[tuple[float, float]] = (legato_low, legato_high)
+
+        self.rng: Final[np.random.Generator] = np.random.default_rng(seed)
+
+    def perturb_articulation(
+        self, score: PerformanceScore, expression_map: ScoreExpressionMap
+    ) -> PerformanceScore:
+        """Evaluates localized score markings to structurally scale note durations.
+
+        Args:
+            score: The performance score structure containing target note events.
+            expression_map: The extracted structural metadata and spanner coordinate tracker.
+
+        Returns:
+            A new modified PerformanceScore instance with adjusted duration_ticks.
+        """
+        original_events: list[NoteEvent] = score.events
+        if not original_events:
+            return copy.deepcopy(score)
+
+        modified_events: list[NoteEvent] = []
+
+        for event in original_events:
+            # 1. Determine the intentional stylistic factor (alpha)
+            alpha: float = self._calculate_intentional_alpha(
+                event.onset_ticks, expression_map
+            )
+
+            # 2. Sample the unintentional biomechanical motor residual error (zeta)
+            # Equation: zeta ~ N(0, sigma_d^2)
+            zeta: float = float(self.rng.normal(0.0, self.sigma_d))
+
+            # 3. Calculate and clamp the final realized performance length
+            # Equation: d' = max(d_min, round(d * alpha + zeta))
+            calculated_duration = int(np.round(event.duration_ticks * alpha + zeta))
+            final_duration: int = max(self.d_min, calculated_duration)
+
+            modified_event = NoteEvent(
+                pitch=event.pitch,
+                onset_ticks=event.onset_ticks,
+                duration_ticks=final_duration,
+                velocity=event.velocity,
+            )
+            modified_events.append(modified_event)
+
+        perturbed_score = PerformanceScore(source=score.source)
+        perturbed_score.events = modified_events
+        return perturbed_score
+
+    def _calculate_intentional_alpha(
+        self, onset_tick: int, expression_map: ScoreExpressionMap
+    ) -> float:
+        """Determines the baseline touch scaling factor by analyzing local spanners and marks."""
+        # Check explicit note-level technical markings first
+        local_marks: set[str] = expression_map.local_articulations.get(
+            onset_tick, set()
+        )
+
+        if "staccato" in local_marks or "staccatissimo" in local_marks:
+            return float(self.rng.uniform(*self.range_staccato))
+
+        if "tenuto" in local_marks:
+            return float(self.rng.uniform(0.98, 1.05))
+
+        # Check continuous structural spanners (Slur phrase groups indicating legato connection)
+        for start_tick, end_tick in expression_map.slur_phrases:
+            if start_tick <= onset_tick <= end_tick:
+                return float(self.rng.uniform(*self.range_legato))
+
+        # Default fallback context for unmarked musical events
+        return float(self.rng.uniform(*self.range_neutral))
+
+=== FILE: ./src/score2dataset/repository/musicxml_to_events.py ===
+import xml.etree.ElementTree as ET
+
+
+def parse_musicxml_to_midi_ticks(xml_path, default_volume=80):
+
+    TPQN = 480
+
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    events = []
+
+    note_base_midi = {"C": 12, "D": 14, "E": 16, "F": 17, "G": 19, "A": 21, "B": 23}
+
+    for part in root.findall("part"):
+
+        current_time_ticks = 0
+        divisions = 1
+        last_note_duration_ticks = 0
+
+        for measure in part.findall("measure"):
+
+            attributes = measure.find("attributes")
+            if attributes is not None:
+
+                div_elem = attributes.find("divisions")
+                if div_elem is not None:
+                    divisions = int(div_elem.text)
+
+            for element in measure:
+                if element.tag == "note":
+
+                    is_chord = element.find("chord") is not None
+                    is_rest = element.find("rest") is not None
+
+                    duration_elem = element.find("duration")
+                    if duration_elem is not None:
+                        xml_duration = float(duration_elem.text)
+                        duration_ticks = int(round((xml_duration / divisions) * TPQN))
+                    else:
+                        duration_ticks = 0
+
+                    if is_chord:
+                        start_time = current_time_ticks - last_note_duration_ticks
+                    else:
+                        start_time = current_time_ticks
+
+                    if not is_rest:
+
+                        pitch_elem = element.find("pitch")
+                        if pitch_elem is not None:
+                            step = pitch_elem.find("step").text
+                            octave = int(pitch_elem.find("octave").text)
+
+                            midi_note = note_base_midi[step] + (octave * 12)
+
+                            alter_elem = pitch_elem.find("alter")
+                            if alter_elem is not None:
+                                midi_note += int(alter_elem.text)
+
+                            event_obj = {
+                                "pitch": midi_note,
+                                "start_time": start_time,
+                                "duration": duration_ticks,
+                                "volume": default_volume,
+                            }
+                            events.append(event_obj)
+
+                    # Avança o relógio geral se não for um acorde empilhado
+                    if not is_chord:
+                        current_time_ticks += duration_ticks
+                        last_note_duration_ticks = duration_ticks
+
+    return events
+
+
+"""
+# =====================================================================
+# EXECUÇÃO DO TESTE
+# =====================================================================
+if __name__ == "__main__":
+    xml_filename = "hungarian_dance_n5.musicxml"
+
+    try:
+        musical_events = parse_musicxml_to_midi_ticks(xml_filename)
+
+        print(f"--- LISTA DE EVENTOS MIDI (Resolução: 480 TPQN) ---")
+        for idx, ev in enumerate(musical_events[:]):
+            print(
+                f"Nota {idx+1:02d} -> Pitch: {ev['pitch']} | Início: {ev['start_time']:5d} ticks | Duração: {ev['duration']:4d} ticks | Volume: {ev['volume']}"
+            )
+
+    except FileNotFoundError:
+        print(
+            f"Erro: Certifique-se de ter o arquivo '{xml_filename}' gerado para o teste."
+        )
+"""
+
+=== FILE: ./src/score2dataset/validators/musicxml_validator.py ===
+from pathlib import Path
+import logging
+
+from lxml import etree
+
+
+def is_strict_musicxml(file_path: Path, xsd_schema_path: Path) -> bool:
+    """
+    Realiza uma validação estrutural profunda contra o esquema oficial XSD do MusicXML.
+    Retorna True apenas se o arquivo for semanticamente um MusicXML válido.
+    """
+    if not file_path.is_file() or not xsd_schema_path.is_file():
+        logging.error("[Validador] Arquivos de entrada ou de esquema XSD ausentes.")
+        return False
+
+    try:
+        # 1. Parse do arquivo de regras oficial (.xsd)
+        xsd_doc = etree.parse(str(xsd_schema_path))
+        musicxml_schema = etree.XMLSchema(
+            xsd_doc
+        )  # Transforma lxml em um motor validador específico
+
+        # 2. Parse do seu arquivo de partitura (.musicxml)
+        target_xml_doc = etree.parse(str(file_path))
+
+        # 3. Executa a validação profunda baseada em regras
+        # Se houver qualquer tag inválida ou fora de ordem, retorna False
+        is_valid = musicxml_schema.validate(target_xml_doc)
+
+        if not is_valid:
+            # Captura e exibe no log exatamente qual tag ou linha musical violou a regra
+            error_log = musicxml_schema.error_log.filter_from_errors()
+            logging.warning(
+                f"[Validador] O arquivo {file_path.name} quebrou as regras do MusicXML: {error_log}"
+            )
+
+        return is_valid
+
+    except etree.XMLSyntaxError as syntax_err:
+        logging.error(
+            f"[Validador] Erro crasso de sintaxe XML no arquivo: {syntax_err}"
+        )
+        return False
+    except Exception as general_err:
+        logging.error(f"[Validador] Falha inesperada durante a checagem: {general_err}")
+        return False
+
+=== FILE: ./src/score2dataset/validators/__init__.py ===

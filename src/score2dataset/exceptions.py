@@ -5,6 +5,9 @@ generation pipeline to respond distinctively to configuration, parsing,
 and runtime execution faults.
 """
 
+from collections.abc import Callable
+from typing import Any
+
 
 class Score2DatasetError(Exception):
     """Base exception class for all errors raised by this package."""
@@ -23,6 +26,13 @@ class AudioEngineError(Score2DatasetError):
         self.returncode: int = returncode
         self.details: str = details
 
+    def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
+        """Customizes pickling behavior to preserve attributes across process boundaries."""
+        return (
+            self.__class__,
+            (self.args[0], self.returncode, self.details),
+        )
+
 
 class ExporterError(Score2DatasetError):
     """Raised when serialization to standard protocols (like MIDI) fails."""
@@ -33,4 +43,4 @@ class ParserError(Score2DatasetError):
 
 
 class ProcessorError(Score2DatasetError):
-    """Raised when an internal audio digital signal processing or convolution step fails."""
+    """Raised when an internal audio digital signal processing step fails."""
