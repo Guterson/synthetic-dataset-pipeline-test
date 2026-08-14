@@ -7,6 +7,7 @@ executable jobs without triggering active runtime side-effects.
 """
 
 import ast
+import sys
 from pathlib import Path
 
 
@@ -92,6 +93,9 @@ class ModelStaticParser:
                     # Locate files explicitly implementing the OnsetDetector contract
                     if "OnsetDetector" in base_names:
                         return item.name
-        except Exception:
+        except (OSError, SyntaxError) as err:
+            print(
+                f"⚠️ Static parse warning for {file_path.name}: {err}", file=sys.stderr
+            )
             return None
         return None

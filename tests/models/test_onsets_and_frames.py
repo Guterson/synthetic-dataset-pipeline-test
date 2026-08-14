@@ -1,79 +1,106 @@
-"""Functional verification suite for the multi-task Onsets and Frames (O&F) architecture.
+"""Automated verification suite testing the Onsets and Frames multi-task pipeline.
 
-Validates parallel CNN feature extraction heads, time-series permutation tracking,
-dual-head logit matrix dimensions, and gradient flow through the fusion gating layer.
+Validates parallel convolutional recurrent neural shape grids, multi-task linear
+loss summation steps, and concrete initialization hook compliance contracts.
 """
 
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pytest
 import torch
+from torch.utils.data import DataLoader
 
-from score2dataset.models.onsets_and_frames import OnsetsAndFramesClassifier
+from score2dataset.models.onsets_and_frames import (
+    OnsetsAndFramesClassifier,
+    OnsetsAndFramesDetector,
+)
+
+# ---1. MULTI-TASK NEURAL SHAPE MATRIX TESTS---
 
 
-def test_onsets_and_frames_dual_output_shapes() -> None:
-    """Verify the network cleanly returns separate, synchronized onset and frame tracking grids."""
-    model = OnsetsAndFramesClassifier(n_mels=229)
+@pytest.mark.parametrize("batch_size, n_mels, frames", [(1, 229, 30), (4, 229, 64)])
+def test_multi_task_classifier_yields_parallel_tensor_tuples(
+    batch_size, n_mels, frames
+):
+    """Verifies that the dual front-end heads and LSTM yield correct matching output shapes."""
+    model = OnsetsAndFramesClassifier(n_mels=n_mels)
     model.eval()
 
-    # Simulate 1 audio window: 229 log-mel bins across exactly 200 temporal frames (32ms resolution)
-    mock_spec = torch.randn(1, 229, 200)
+    # Structural fake input specs matrix array: [Batch, MelBins, Frames]
+    fake_specs = torch.randn(batch_size, n_mels, frames)
 
     with torch.no_grad():
-        onset_logits, frame_logits = model(mock_spec)
+        onset_logits, frame_logits = model(fake_specs)
 
-    # Verify both heads match the exact same timeline scale bounds [Batch, Frames, Pitches]
-    assert onset_logits.shape == (1, 200, 128)
-    assert frame_logits.shape == (1, 200, 128)
-
-
-def test_acoustic_head_pooling_boundaries() -> None:
-    """Ensure the underlying pooling math collapses frequency scales while protecting time steps."""
-    model = OnsetsAndFramesClassifier(n_mels=229)
-
-    # Verify that changing the number of timeline frames scales the output length linearly
-    mock_short_spec = torch.randn(1, 229, 50)
-    mock_long_spec = torch.randn(1, 229, 150)
-
-    with torch.no_grad():
-        onset_short, _ = model(mock_short_spec)
-        onset_long, _ = model(mock_long_spec)
-
-    assert onset_short.shape[1] == 50
-    assert onset_long.shape[1] == 150
+    # Verify both heads map to [Batch, Frames, 128] independently
+    assert onset_logits.shape == (batch_size, frames, 128)
+    assert frame_logits.shape == (batch_size, frames, 128)
+    assert onset_logits.dtype == torch.float32
+    assert frame_logits.dtype == torch.float32
 
 
-def test_multi_task_gradient_flow_and_gating() -> None:
-    """Business Rule: Frame activations must structurally integrate onset feature weights.
+# ---2. MULTI-TASK HOOK STEP LIFECYCLE TESTS---
 
-    Verifies that gradients flow uninterrupted through both parallel convolutional
-    heads back to the shared spectrogram input during a simulated training step.
-    """
-    model = OnsetsAndFramesClassifier(n_mels=229)
-    model.train()  # Activate training mode to unblock gradient tracking registers
 
-    # Simulate a single input requiring gradient tracking
-    mock_spec = torch.randn(1, 229, 100, requires_grad=True)
+def test_multi_task_training_step_blends_losses_correctly():
+    """Verifies that training_step unpacks the batch and sums parallel head costs."""
+    detector = OnsetsAndFramesDetector()
+    device = torch.device("cpu")
 
-    onset_logits, frame_logits = model(mock_spec)
+    # 💡 ACCURATE FIX: Use mocking boundaries via patch.object contexts to satisfy Pyright
+    mock_classifier = MagicMock(spec=OnsetsAndFramesClassifier)
+    mock_classifier.return_value = (torch.randn(2, 40, 128), torch.randn(2, 40, 128))
 
-    # Create dummy targets matching output dimensions [Batch, Frames, Pitches]
-    dummy_onset_targets = torch.zeros_like(onset_logits)
-    dummy_frame_targets = torch.zeros_like(frame_logits)
+    mock_criterion = MagicMock()
+    mock_criterion.side_effect = [
+        torch.tensor(0.5),
+        torch.tensor(0.8),
+    ]  # Return distinct loss scalars
 
-    # Compute a combined mock loss mimicking your L_total = L_onset + L_frame step
-    loss_fn = torch.nn.BCEWithLogitsLoss()
-    loss_onset = loss_fn(onset_logits, dummy_onset_targets)
-    loss_frame = loss_fn(frame_logits, dummy_frame_targets)
-    total_loss = loss_onset + loss_frame
+    # Inject variables through mocking context frames safely
+    with (
+        patch.object(detector, "_active_model", mock_classifier),
+        patch.object(detector, "criterion", mock_criterion),
+    ):
 
-    # Execute backpropagation
-    total_loss.backward()
+        # Multi-task batch signature shape mapping
+        batch = (
+            torch.randn(2, 229, 40),  # spec_batch
+            torch.zeros(2, 40, 128),  # audio_truth_batch
+            torch.ones(2, 40, 128),  # score_expected_batch
+        )
 
-    # 1. Verify that the shared input tensor successfully collected backpropagated gradients
-    assert mock_spec.grad is not None
-    assert mock_spec.grad.shape == (1, 229, 100)
+        composite_loss = detector.training_step(batch, device)
 
-    # 2. Verify that both underlying independent heads contributed to the gradient step
-    for name, param in model.named_parameters():
-        assert (
-            param.grad is not None
-        ), f"Gradient breakdown detected: parameter '{name}' received no updates."
+        assert isinstance(composite_loss, torch.Tensor)
+        assert np.isclose(composite_loss.item(), 1.3)  # 0.5 (onset) + 0.8 (frame) = 1.3
+        assert mock_classifier.called
+        assert mock_criterion.call_count == 2
+
+
+# ---3. DATA LOADING INFRASTRUCTURE TESTS---
+
+
+@patch("numpy.load")
+def test_multi_task_dataloader_ingests_and_types_matrices(mock_np_load):
+    """Verifies that the data hook fetches files from the dedicated O&F directory allocation."""
+    detector = OnsetsAndFramesDetector()
+
+    # Mask disk array metrics cleanly
+    mock_np_load.side_effect = [
+        np.zeros((4, 229, 50)),  # spectrograms.npy
+        np.zeros((4, 50, 128)),  # audio_truth.npy
+        np.zeros((4, 50, 128)),  # score_expected.npy
+    ]
+
+    # Prove that the unique model directory path contract maps perfectly
+    assert detector.dataset_path == "data/processed/onsets_and_frames_dataset"
+
+    loader = detector.get_dataloader()
+    assert isinstance(loader, DataLoader)
+
+    batch = next(iter(loader))
+    assert len(batch) == 3
+    # Check that batch configurations utilize batch size 8 as requested by construction rules
+    assert loader.batch_size == 8

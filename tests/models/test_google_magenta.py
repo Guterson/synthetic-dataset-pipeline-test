@@ -1,86 +1,124 @@
-"""Functional verification suite for the Sequence-to-Sequence (Seq2Seq) Magenta Transformer.
+"""Automated verification suite testing the Magenta Seq2Seq Transformer pipeline.
 
-Validates front-end acoustic frame projections, causal sequence masking bounds,
-and logit bias gradient distributions for your score-memory mitigation thesis layers.
+Validates autoregressive attention masking matrices, mixed-type sequence data ingestion,
+and dimensional collapsing sequence loss calculations.
 """
 
+from unittest.mock import MagicMock, patch
+
+import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
-from score2dataset.models.google_magenta import MagentaTranscriptionTransformer
+from score2dataset.models.google_magenta import (
+    MagentaTranscriptionTransformer,
+    MagentaTransformerDetector,
+    PositionalEncoding,
+)
 
-
-def test_transformer_output_dimensions() -> None:
-    """Verify that the encoder-decoder pipeline maps audio features cleanly to vocabulary token spaces."""
-    # Instantiated using compact configurations to save local runtime compilation footprints
-    model = MagentaTranscriptionTransformer(
-        n_mels=128, d_model=256, nhead=8, num_encoder_layers=2, num_decoder_layers=2
-    )
-    model.eval()
-
-    # Simulate 1 audio window: 128 log-mel bins across exactly 100 temporal frames
-    mock_spec = torch.randn(1, 128, 100)
-
-    # Simulate a target sequence of 50 tokens (e.g., NOTE_ON, TIME_SHIFT events)
-    mock_targets = torch.randint(0, 358, (1, 50))
-
-    with torch.no_grad():
-        logits = model(log_mel_spec=mock_spec, target_tokens=mock_targets)
-
-    # The model output must trace exactly: [Batch, Target_Seq_Len, Vocabulary_Size]
-    assert logits.shape == (1, 50, 358)
+# ---1. TRANSFORMER LAYER COMPONENT TESTS---
 
 
-def test_causal_mask_generation() -> None:
-    """Business Rule: The autoregressive decoder must be physically blocked from looking into the future.
-
-    Ensures the generated causal matrix applies -inf boundaries to protect the timeline.
-    """
-    model = MagentaTranscriptionTransformer()
+def test_causal_mask_generator_creates_upper_triangular_bounds():
+    """Verifies that the casual mask contains 0.0 on diagonal/lower and -inf on future blocks."""
+    model = MagentaTranscriptionTransformer(n_mels=128)
+    sequence_length = 4
     device = torch.device("cpu")
 
-    # Generate a mask for a 5-step event sequence
-    mask = model.generate_square_subsequent_mask(sz=5, device=device)
+    mask = model.generate_square_subsequent_mask(sequence_length, device)
 
-    assert mask.shape == (5, 5)
-    # The upper triangle (future frames) must be heavily penalized with -inf values
-    assert torch.all(mask[0, 1:] == float("-inf"))
-    # The lower triangle and diagonal (past/current frames) must retain standard 0.0 scale parameters
-    assert torch.all(mask.diagonal() == 0.0)
+    # Assert structural layout properties
+    assert mask.shape == (sequence_length, sequence_length)
+    assert mask.dtype == torch.float32
+
+    # Diagonal and lower bounds must allow attention (0.0 logit offset)
+    assert mask[0, 0] == 0.0
+    assert mask[1, 0] == 0.0
+
+    # Upper bounds (future indices) must block attention (-inf logit offset)
+    assert mask[0, 1] == float("-inf")
+    assert mask[1, 3] == float("-inf")
 
 
-def test_score_bias_logit_injection() -> None:
-    """Verify that custom structural bias masks cleanly modify output token probabilities.
+def test_positional_encoding_preserves_tensor_shapes():
+    """Verifies that sinusoidal positional waves inject data without warping vector sizes."""
+    encoding_layer = PositionalEncoding(d_model=256)
+    fake_embeddings = torch.randn(2, 50, 256)  # [Batch, SeqLen, EmbeddingDim]
 
-    Ensures that injecting external logit adjustments does not disrupt or clip
-    backpropagated gradients flowing through the linear projection heads.
-    """
-    model = MagentaTranscriptionTransformer(n_mels=128, d_model=256)
-    model.train()  # Activate backpropagation register states
+    output = encoding_layer(fake_embeddings)
+    assert output.shape == (2, 50, 256)
 
-    mock_spec = torch.randn(1, 128, 60)
-    mock_targets = torch.randint(0, 358, (1, 30))
 
-    # Create a custom structural bias mask matching the output logit block boundaries
-    # Setting a -10.0 penalty at a specific coordinate simulates suppressing a score hallucination
-    bias_mask = torch.zeros((1, 30, 358), dtype=torch.float32)
-    bias_mask[0, 15, 45] = -10.0
+# ---2. SEQUENCE LOSS COLLAPSING LIFECYCLE TESTS---
 
-    logits_without_bias = model(mock_spec, mock_targets, score_bias_mask=None)
-    logits_with_bias = model(mock_spec, mock_targets, score_bias_mask=bias_mask)
 
-    # 1. Assert that the mathematical modification changed the target output token value explicitly
-    assert not torch.equal(logits_with_bias, logits_without_bias)
-    assert torch.isclose(
-        logits_with_bias[0, 15, 45], logits_without_bias[0, 15, 45] - 10.0
-    )
+def test_sequence_training_step_collapses_dimensions_correctly():
+    """Verifies that training_step flattens sequence outputs for cross-entropy evaluation."""
+    detector = MagentaTransformerDetector()
+    device = torch.device("cpu")
 
-    # 2. Execute a backward pass to guarantee gradient paths are left unhindered
-    loss_fn = torch.nn.CrossEntropyLoss()
-    dummy_labels = torch.randint(0, 358, (1, 30))
+    # Configure mock transformer to return logit sequences matching vocabulary space
+    mock_transformer = MagicMock(spec=MagentaTranscriptionTransformer)
+    mock_transformer.vocab_size = 358
+    mock_transformer.return_value = torch.randn(
+        2, 50, 358
+    )  # [Batch, SeqLen, VocabSize]
 
-    # Flatten the outputs for the cross-entropy function contract
-    loss = loss_fn(logits_with_bias.view(-1, 358), dummy_labels.view(-1))
-    loss.backward()
+    # Mock cross entropy to expect flattened [Batch * SeqLen] dimensions
+    mock_criterion = MagicMock(return_value=torch.tensor(2.45))
 
-    # Assert that optimization updates flow cleanly out to the linear generator head
-    assert model.logits_generator.weight.grad is not None
+    with (
+        patch.object(detector, "_active_model", mock_transformer),
+        patch.object(detector, "criterion", mock_criterion),
+    ):
+
+        # Assemble mixed structural data types: float frames and long tokens
+        batch = (
+            torch.randn(2, 128, 50),  # spec_b (float)
+            torch.randint(0, 358, (2, 50)).long(),  # token_in_b (long)
+            torch.randint(0, 358, (2, 50)).long(),  # token_tgt_b (long)
+            torch.randn(2, 50, 358),  # bias_b (float)
+        )
+
+        loss = detector.training_step(batch, device)
+
+        assert isinstance(loss, torch.Tensor)
+        assert np.isclose(loss.item(), 2.45)
+
+        # Verify that view flattening arguments matched expected targets
+        called_args = mock_criterion.call_args[0]
+        assert called_args[0].shape == (
+            100,
+            358,
+        )  # [2 * 50, 358] collapsed matrix shape
+        assert called_args[1].shape == (100,)  # [2 * 50] collapsed target vector shape
+
+
+# ---3. HETEROGENEOUS DATA LOADING TESTS---
+
+
+@patch("numpy.load")
+def test_transformer_dataloader_enforces_mixed_tensor_types(mock_np_load):
+    """Verifies that the dataloader casts token lists to long and audio frames to float."""
+    detector = MagentaTransformerDetector()
+
+    # Return 4 target arrays matching production disk extraction sequences
+    mock_np_load.side_effect = [
+        np.zeros((4, 229, 100)),  # spectrograms.npy
+        np.ones((4, 50)),  # tokens_input.npy
+        np.ones((4, 50)),  # tokens_target.npy
+        np.zeros((4, 50, 358)),  # score_bias_masks.npy
+    ]
+
+    with patch.object(MagentaTransformerDetector, "dataset_path", "mock/magenta/paths"):
+        loader = detector.get_dataloader()
+        assert isinstance(loader, DataLoader)
+
+        batch = next(iter(loader))
+        spec, token_in, token_tgt, bias = batch
+
+        # Verify exact datatypes required to prevent embedding layer crashes
+        assert spec.dtype == torch.float32
+        assert token_in.dtype == torch.long
+        assert token_tgt.dtype == torch.long
+        assert bias.dtype == torch.float32

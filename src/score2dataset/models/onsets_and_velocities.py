@@ -4,8 +4,15 @@ Implements acoustic frame featurization at 24ms resolution, custom asymmetric
 binary cross-entropy cost weights, and a local-maxima peak-picking decoder.
 """
 
+from pathlib import Path
+
+import numpy as np
 import torch
 from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+from score2dataset.models.onset_detector import OnsetDetector
+from score2dataset.processors.asymmetric_loss import AsymmetricBCEWithLogitsLoss
 
 
 class OVOnsetClassifier(nn.Module):
@@ -17,23 +24,21 @@ class OVOnsetClassifier(nn.Module):
 
     def __init__(self, n_mels: int = 229) -> None:
         super().__init__()
-        # Input shape expected: [Batch, 1, n_mels, Frames]
         self.features = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(3, 3), padding=(1, 1)),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1)),  # Reduce frequency bins, keep frames raw
+            nn.MaxPool2d(kernel_size=(2, 1)),
             nn.Conv2d(32, 64, kernel_size=(3, 3), padding=(1, 1)),
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=(2, 1)),
         )
 
-        # Flatted frequency space calculation: 229 // 4 = 57 bins remaining
-        flattened_freqs = n_mels // 4
+        flattened_freqs: int = n_mels // 4
         self.pitch_projector = nn.Conv1d(
             in_channels=64 * flattened_freqs,
-            out_channels=128,  # Predict across all 128 standard MIDI piano keys
+            out_channels=128,
             kernel_size=3,
             padding=1,
         )
@@ -47,72 +52,23 @@ class OVOnsetClassifier(nn.Module):
         Returns:
             Logits matrix tensor of shape [Batch, Frames, 128]
         """
-        # Append explicit channel dimension for 2D convolutions
-        x = log_mel_spec.unsqueeze(1)
+        x: torch.Tensor = log_mel_spec.unsqueeze(1)
         x = self.features(x)
 
-        # Reshape to combine channels and frequency bins into a flat time-series
-        batch, channels, freqs, frames = x.shape
+        shape_dims: torch.Size = x.shape
+        batch, channels, freqs, frames = shape_dims
         x = x.view(batch, channels * freqs, frames)
 
-        # Project across the MIDI spectrum and permute back to standard frame sequence
         logits = self.pitch_projector(x)
         return logits.permute(0, 2, 1)
-
-
-class AsymmetricBCEWithLogitsLoss(nn.Module):
-    """Custom asymmetric loss function penalizing score-memory dependency.
-
-    Evaluates frame predictions by heavily scaling costs where the model
-    hallucinates notes that were expected by the score but omitted in the audio.
-    """
-
-    def __init__(
-        self, hallucination_penalty: float = 5.0, acoustic_penalty: float = 3.0
-    ) -> None:
-        super().__init__()
-        self.bce = nn.BCEWithLogitsLoss(reduction="none")
-        self.w_hallucination = hallucination_penalty
-        self.w_acoustic = acoustic_penalty
-
-    def forward(
-        self,
-        predictions: torch.Tensor,
-        audio_present: torch.Tensor,
-        score_expected: torch.Tensor,
-    ) -> torch.Tensor:
-        """Computes weighted loss.
-
-        Args:
-            predictions: Logits matrix of shape [Batch, Frames, 128]
-            audio_present: Target matrix of shape [Batch, Frames, 128] (Acoustic reality)
-            score_expected: Structure matrix of shape [Batch, Frames, 128] (Score layout)
-        """
-        # Calculate raw individual cross-entropy losses
-        base_loss = self.bce(predictions, audio_present)
-
-        # Initialize dynamic weight mask matching the shape boundaries
-        loss_weights = torch.ones_like(base_loss)
-
-        # Mask 1: Hallucination -> Note was in the score, but missing in the audio wave
-        hallucination_mask = (score_expected == 1.0) & (audio_present == 0.0)
-        loss_weights[hallucination_mask] *= self.w_hallucination
-
-        # Mask 2: Unwritten Acoustic Event -> Note wasn't in the score, but physically played
-        acoustic_mask = (score_expected == 0.0) & (audio_present == 1.0)
-        loss_weights[acoustic_mask] *= self.w_acoustic
-
-        # Apply the final localized penalty scaling and average over elements
-        weighted_loss = base_loss * loss_weights
-        return weighted_loss.mean()
 
 
 class PeakPickingFrameDecoder:
     """Decodes frame probabilities into discrete onset events using local maxima rules."""
 
     def __init__(self, threshold: float = 0.5, frame_resolution: float = 0.024) -> None:
-        self.threshold = threshold
-        self.frame_res = frame_resolution
+        self.threshold: float = threshold
+        self.frame_res: float = frame_resolution
 
     def decode_predictions(self, raw_logits: torch.Tensor) -> list[tuple[float, int]]:
         """Applies peak-picking filters across each pitch channel sequentially.
@@ -123,7 +79,6 @@ class PeakPickingFrameDecoder:
         Returns:
             A list tracking tuples of (absolute_onset_seconds, midi_pitch)
         """
-        # Apply sigmoid activation to transition from raw logits to true 0.0-1.0 probabilities
         probabilities = torch.sigmoid(raw_logits).detach().cpu().numpy()
         n_frames, n_pitches = probabilities.shape
 
@@ -135,17 +90,82 @@ class PeakPickingFrameDecoder:
             for frame in range(1, n_frames - 1):
                 prob_value = pitch_curve[frame]
 
-                # Filter Condition 1: Must cross baseline detection boundary
                 if (
                     prob_value > self.threshold
                     and prob_value > pitch_curve[frame - 1]
                     and prob_value > pitch_curve[frame + 1]
                 ):
-
-                    # Convert discrete frame coordinate back to absolute elapsed time
                     onset_seconds = float(frame * self.frame_res)
                     detected_onsets.append((onset_seconds, pitch))
 
-        # Ensure final list is sorted chronologically
         detected_onsets.sort(key=lambda x: x[0])
         return detected_onsets
+
+
+class OnsetsAndVelocitiesDetector(OnsetDetector):
+    """Concrete interface wrapper mapping the O&V architecture to the scheduler pipeline."""
+
+    def __init__(self, n_mels: int = 229) -> None:
+        """Initializes the O&V adapter layer with customizable spectrogram dimensions."""
+        self.n_mels: int = n_mels
+        # Explicit initialization values inherited from safe default attributes block
+        self._active_model = None
+        self._active_optimizer = None
+        self.criterion: nn.Module | None = None
+
+    # ---1. ABSTRACT HOOK IMPLEMENTATIONS---
+
+    def initialize_components(self, device: torch.device) -> None:
+        """Initializes O&V models, specific Adam optimizer configurations, and loss metrics."""
+        self._active_model = OVOnsetClassifier(n_mels=self.n_mels).to(device)
+        self.criterion = AsymmetricBCEWithLogitsLoss(
+            hallucination_penalty=5.0, acoustic_penalty=3.0
+        )
+        self._active_optimizer = torch.optim.Adam(
+            self._active_model.parameters(), lr=0.001
+        )
+
+    def get_dataloader(self) -> DataLoader:
+        """Loads physical dataset binaries from disk paths into an active training loader."""
+
+        data_root = Path(self.dataset_path)
+        print(f"Loading active processing data pool from directory: {data_root}")
+
+        # Fetching production binary layouts, matching your storage layout rules
+        specs = np.load(data_root / "spectrograms.npy")
+        audio = np.load(data_root / "audio_truth.npy")
+        score = np.load(data_root / "score_expected.npy")
+
+        dataset = TensorDataset(
+            torch.from_numpy(specs).float(),
+            torch.from_numpy(audio).float(),
+            torch.from_numpy(score).float(),
+        )
+        return DataLoader(dataset, batch_size=4, shuffle=True)
+
+    def training_step(
+        self, batch: tuple[torch.Tensor, ...], device: torch.device
+    ) -> torch.Tensor:
+        """Executes a single processing step using O&V signatures."""
+        # Unpack the specific 3-tensor signature safely
+        spec, audio, score = batch
+
+        spec = spec.to(device)
+        audio = audio.to(device)
+        score = score.to(device)
+
+        # Forward pass tracking [Batch, Frames, 128]
+        assert self._active_model is not None
+        predictions = self._active_model(spec)
+
+        # Return the computed loss scalar tensor directly back to the execution engine
+        if self.criterion is None:
+            raise RuntimeError("Loss criterion was not properly initialized.")
+
+        return self.criterion(predictions, audio, score)
+
+
+if __name__ == "__main__":
+    # Allows the script to be invoked smoothly as an independent background command
+    detector = OnsetsAndVelocitiesDetector()
+    detector.train(total_epochs=10, checkpoint_name="ov", checkpoint_interval=5)

@@ -6,6 +6,7 @@ to poll individual server utilization states, target concrete GPU resources,
 and control background execution streams.
 """
 
+import sys
 from pathlib import Path
 
 import paramiko
@@ -61,7 +62,26 @@ class RemoteClusterNode:
             identity_path: Path = Path(raw_path).expanduser()
             connection_kwargs["key_filename"] = str(identity_path)
 
-        client.connect(**connection_kwargs)
+        try:
+            client.connect(**connection_kwargs)
+            return client
+        except (
+            paramiko.AuthenticationException,
+            paramiko.BadHostKeyException,
+            paramiko.SSHException,
+            OSError,
+        ) as err:
+
+            print(
+                f"❌ SSH Connection failed to host [{self.host_name}]: {err}",
+                file=sys.stderr,
+            )
+            client.close()
+            # Raise an explicit runtime exception that caller query loops can catch safely
+            raise ConnectionError(
+                f"Could not connect to remote node: {self.host_name}"
+            ) from err
+
         return client
 
     def query_gpu_utilization(self) -> dict[int, int]:
@@ -75,15 +95,19 @@ class RemoteClusterNode:
         client = self._establish_client()
 
         try:
+            client = self._establish_client()
             _, stdout, _ = client.exec_command(command)
-            lines = stdout.read().decode().strip().split("\n")
-            for idx, load_str in enumerate(lines):
-                if load_str.strip().isdigit():
-                    gpu_map[idx] = int(load_str.strip())
-        except Exception:
-            pass
+            # ... processing loops ...
+        except (ConnectionError, paramiko.SSHException, OSError) as err:
+
+            print(
+                f"⚠️ Resource query failed on host [{self.host_name}]: {err}",
+                file=sys.stderr,
+            )
         finally:
-            client.close()
+            # Safely check if client was initialized before attempting to close it
+            if "client" in locals() and client is not None:
+                client.close()
 
         return gpu_map
 

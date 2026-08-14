@@ -6,11 +6,13 @@ profiles and enforces strict low-priority constraints by evicting running tasks
 gracefully if foreign, higher-priority workloads are detected.
 """
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from score2dataset.scripts.cluster_nodes import RemoteClusterNode
-from score2dataset.scripts.static_parser import JobTask
+from score2dataset.scripts.static_parser import JobTask, ModelStaticParser
 
 
 class ActiveDeployment:
@@ -83,6 +85,15 @@ class LowPriorityClusterScheduler:
                     )
 
         return available_slots
+
+    def get_available_resources(self) -> list[tuple[RemoteClusterNode, int]]:
+        """Public interface providing an audited matrix of unassigned cluster GPU slots.
+
+        Returns:
+            list[tuple[RemoteClusterNode, int]]: Pairs of nodes and free GPU slots.
+        """
+        # Exposes the internal slot lookup safely to external scripts (like evaluation)
+        return self._locate_available_gpu_slots()
 
     def execute_orchestration(self, job_queue: list[JobTask]) -> None:
         """Drains the global dynamic job queue under polite preemption limits.
@@ -181,7 +192,6 @@ def get_ssh_hosts() -> list[str]:
     Returns:
         List[str]: Clean array matching user ssh connection tags.
     """
-    import os
 
     config_path = os.path.expanduser("~/.ssh/config")
     if not os.path.exists(config_path):
@@ -199,9 +209,6 @@ def get_ssh_hosts() -> list[str]:
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-
-    from score2dataset.scripts.static_parser import ModelStaticParser
 
     # Discover architecture nodes defined in local client files
     cluster_hosts = get_ssh_hosts()
