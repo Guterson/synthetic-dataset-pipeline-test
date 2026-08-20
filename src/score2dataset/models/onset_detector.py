@@ -73,6 +73,21 @@ class OnsetDetector(ABC):
             torch.Tensor: A single scalar loss tensor ready for backpropagation.
         """
 
+    @abstractmethod
+    def transcribe(
+        self, audio_waveform: torch.Tensor, sample_rate: int = 48000
+    ) -> list[tuple[float, int]]:
+        """Abstract inference contract forcing identical user-facing behavior.
+
+        Args:
+            audio_waveform: Raw 1D time-domain audio tensor [Samples]
+            sample_rate: Physical recording frequency (default: 48kHz)
+
+        Returns:
+            list[tuple[float, int]]: A universally formatted list tracking:
+                                    [(high_resolution_seconds, midi_pitch), ...]
+        """
+
     # ---2. CONCRETE UTILITY METHODS---
 
     def set_validation_path(self, target_path: str) -> None:

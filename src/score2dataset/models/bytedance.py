@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, TensorDataset
 # Project-wide infrastructure imports
 from score2dataset.models.onset_detector import OnsetDetector
 from score2dataset.processors.asymmetric_loss import AsymmetricBCEWithLogitsLoss
+from score2dataset.processors.peak_finder import PeakPickingFrameDecoder
 
 
 class ByteDanceRegressionFrontEnd(nn.Module):
@@ -54,16 +55,33 @@ class ByteDanceRegressionModel(nn.Module):
     def __init__(self, n_mels: int = 128) -> None:
         super().__init__()
         self.backbone = ByteDanceRegressionFrontEnd(n_mels=n_mels)
-        self.classification_head = nn.Conv1d(256, 128, kernel_size=3, padding=1)
-        self.regression_head = nn.Conv1d(256, 128, kernel_size=3, padding=1)
+
+        # BiGRU tracking layer to enforce macro-temporal continuity across the frame matrix
+        self.temporal_recurrent = nn.GRU(
+            input_size=256,
+            hidden_size=128,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+        )
+        # Linear projections mapping the 256 GRU features (128 hidden * 2 directions) to 128 pitch classes
+        self.classification_head = nn.Linear(256, 128)
+        self.regression_head = nn.Linear(256, 128)
 
     def forward(self, log_mel_spec: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Processes acoustic inputs and outputs aligned classification and regression grids."""
+        """Processes acoustic inputs through CNN+BiGRU structures and projects output heads."""
+        # Backbone yields shape: [Batch, Channels=256, Frames]
         shared_features = self.backbone(log_mel_spec)
 
-        onset_logits = self.classification_head(shared_features).permute(0, 2, 1)
-        offset_raw = self.regression_head(shared_features).permute(0, 2, 1)
-        offset_regression = 0.5 * torch.tanh(offset_raw)
+        # Format feature matrices to match GRU sequence expectations: [Batch, Frames, Channels]
+        x_sequence = shared_features.permute(0, 2, 1)
+        gru_out, _ = self.temporal_recurrent(x_sequence)
+
+        onset_logits = self.classification_head(gru_out)
+        offset_raw = self.regression_head(gru_out)
+
+        # Enforce unified normalized sub-frame coordinate limits [0, 1) to match your thesis text
+        offset_regression = torch.sigmoid(offset_raw)
 
         return onset_logits, offset_regression
 
@@ -143,13 +161,45 @@ class ByteDanceDetector(OnsetDetector):
         # Head 1 Evaluation: Asymmetric categorization cost
         loss_cls = self.criterion_cls(onset_preds, audio_batch, score_batch)
 
-        # Head 2 Evaluation: Continuous time displacement error matrix tracking
-        loss_reg = self.criterion_reg(offset_preds, offset_batch)
+        # Head 2 Evaluation: Mask continuous tracking errors exclusively to true transient landmarks
+        onset_mask = (audio_batch == 1.0).float()
 
-        # Return blended loss matrix sum directly back to the training container engine
-        return loss_cls + (2.0 * loss_reg)
+        # Compute unreduced mean squared error mapping boundaries
+        masked_preds = offset_preds * onset_mask
+        masked_targets = offset_batch * onset_mask
+
+        loss_reg_unnormalized = self.criterion_reg(masked_preds, masked_targets)
+
+        # Normalize the loss by dividing by the number of active onsets to stabilize gradients
+        loss_reg = loss_reg_unnormalized / max(1.0, onset_mask.sum().item())
+
+        # Return the blended loss sum directly to the optimization container
+        return loss_cls + loss_reg
+
+    def transcribe(
+        self, audio_waveform: torch.Tensor, sample_rate: int = 48000
+    ) -> list[tuple[float, int]]:
+        """Converts raw audio to timestamps via spectrograms and multi-task tensors."""
+        self._active_model.eval()
+        with torch.no_grad():
+            # 1. Internal Input Transformation (Hidden from the outside)
+            log_mel_spec = self._extract_spectrogram_utility(
+                audio_waveform, sample_rate
+            )
+
+            # 2. Forward pass yielding your unified dual-task tensors
+            device = next(self._active_model.parameters()).device
+            onset_logits, time_shifts = self._active_model(log_mel_spec.to(device))
+
+            # 3. Post-processing Decoder execution
+            decoder = PeakPickingFrameDecoder(frame_resolution=(256 / sample_rate))
+            detected_events = decoder.decode_predictions(
+                onset_logits[0], time_shifts[0]
+            )
+
+            return detected_events
 
 
 if __name__ == "__main__":
     detector = ByteDanceDetector()
-    detector.train(total_epochs=50, checkpoint_name="bd", checkpoint_interval=5))
+    detector.train(total_epochs=50, checkpoint_name="bd", checkpoint_interval=5)
