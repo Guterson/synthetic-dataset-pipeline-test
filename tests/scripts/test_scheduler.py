@@ -115,7 +115,7 @@ def test_evaluate_preemption_constraints_evicts_on_foreign_interference(
 @patch.object(LowPriorityClusterScheduler, "_evaluate_preemption_constraints")
 @patch("score2dataset.scripts.scheduler.RemoteClusterNode")
 def test_execute_orchestration_drains_job_queue_completely(
-    mock_node_cls, _mock_preempt, mock_slots, _mock_sleep
+    mock_node_cls, mock_preempt, mock_slots, _mock_sleep
 ):
     """Verifies that the main queue engine assigns steps, loops modules, and registers deployments."""
     scheduler = LowPriorityClusterScheduler(hosts=["host-03"])
@@ -128,13 +128,21 @@ def test_execute_orchestration_drains_job_queue_completely(
     node_instance.launch_background_job.return_value = 8801  # Return mock PID
     mock_node_cls.return_value = node_instance
 
-    # First loop loop query finds an open slot, second sweep returns empty to finalize tracking
+    # First loop query finds an open slot, second sweep returns empty
     mock_slots.side_effect = [[(node_instance, 0)], []]
+
+    # Side-effect to clear active deployments on the second iteration
+    # to mimic a worker health check or job completion clearing the list
+    def simulate_job_completion_or_preemption(queue):
+        if len(queue) == 0:
+            scheduler.active_deployments.clear()
+
+    mock_preempt.side_effect = simulate_job_completion_or_preemption
 
     job_queue = [fake_job]
     scheduler.execute_orchestration(job_queue)
 
-    # Assert module string conversions matched formatting specifications [src/ -> package]
+    # Assert module string conversions matched formatting specifications
     node_instance.launch_background_job.assert_called_once_with(
         "CUDA_VISIBLE_DEVICES=0 python3 -m models.ov"
     )

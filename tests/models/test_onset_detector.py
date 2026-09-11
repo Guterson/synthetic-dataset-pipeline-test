@@ -38,6 +38,14 @@ class ConcreteTestDetector(OnsetDetector):
         _ = batch
         return torch.tensor(0.42, requires_grad=True)
 
+    def transcribe(
+        self, audio_waveform: torch.Tensor, sample_rate: int = 48000
+    ) -> list[tuple[float, int]]:
+        """Abstract inference contract implementation to satisfy base class."""
+        _ = audio_waveform
+        _ = sample_rate
+        return [(0.0, 60)]
+
 
 # ---2. STATE INITIALIZATION AND UTILITY MATRIX TESTS---
 
