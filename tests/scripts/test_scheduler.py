@@ -108,34 +108,29 @@ def test_evaluate_preemption_constraints_evicts_on_foreign_interference(
 # ---3. LOOP ORCHESTRATION SHIFT MATRIX TESTS---
 
 
-@patch(
-    "time.sleep"
-)  # Short-circuit interval blockages to run tests instantly in memory
+@patch("time.sleep")
 @patch.object(LowPriorityClusterScheduler, "_locate_available_gpu_slots")
-@patch.object(LowPriorityClusterScheduler, "_evaluate_preemption_constraints")
 @patch("score2dataset.scripts.scheduler.RemoteClusterNode")
 def test_execute_orchestration_drains_job_queue_completely(
-    mock_node_cls, _mock_preempt, mock_slots, _mock_sleep
+    mock_node_cls, mock_slots, _mock_sleep
 ):
-    """Verifies that the main queue engine assigns steps, loops modules, and registers deployments."""
+    node_instance = MagicMock()
+    node_instance.host_name = "host-03"
+    node_instance.launch_background_job.return_value = 8801
+    node_instance.query_active_gpu_pids.return_value = set()
+    mock_node_cls.return_value = node_instance
+
     scheduler = LowPriorityClusterScheduler(hosts=["host-03"])
     fake_job = JobTask(
         model_name="M3", script_path="src/models/ov.py", dataset_argument=""
     )
 
-    node_instance = MagicMock()
-    node_instance.host_name = "host-03"
-    node_instance.launch_background_job.return_value = 8801  # Return mock PID
-    mock_node_cls.return_value = node_instance
-
-    # First loop loop query finds an open slot, second sweep returns empty to finalize tracking
     mock_slots.side_effect = [[(node_instance, 0)], []]
 
     job_queue = [fake_job]
     scheduler.execute_orchestration(job_queue)
 
-    # Assert module string conversions matched formatting specifications [src/ -> package]
     node_instance.launch_background_job.assert_called_once_with(
         "CUDA_VISIBLE_DEVICES=0 python3 -m models.ov"
     )
-    assert len(job_queue) == 0
+    assert job_queue == []

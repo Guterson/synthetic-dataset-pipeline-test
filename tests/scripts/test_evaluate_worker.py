@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import torch
 
 # Target functional units matching source package structures
+from score2dataset.scripts import evaluate_worker
 from score2dataset.scripts.evaluate_worker import (
     calculate_unified_mir_score,
     run_isolated_inference,
@@ -71,8 +72,9 @@ def test_worker_inference_handles_convolutional_peak_picking_loops(
     mock_module.OnsetsAndVelocitiesDetector = lambda: mock_detector
     mock_import.return_value = mock_module
 
-    with patch(
-        "score2dataset.models.onsets_and_velocities.PeakPickingFrameDecoder"
+    with patch.object(
+        evaluate_worker,
+        "PeakPickingFrameDecoder",
     ) as mock_decoder_cls:
         decoder_instance = MagicMock()
         decoder_instance.decode_predictions.return_value = [(0.24, 60)]
