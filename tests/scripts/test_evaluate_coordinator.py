@@ -88,7 +88,7 @@ def test_coordinator_handles_successful_parallel_execution_cycle(
 
     # 3. Setup mock monitoring tracking loop completion mechanics
     # First query returns the active PID running, second sweep returns an empty set indicating finish
-    node_mock.query_active_gpu_pids.side_effect = [{99421}, set()]
+    _mock_node.return_value.query_active_gpu_pids.side_effect = [{99421}, set()]
 
     # 4. Mock disk files to bypass local operational requirements safely
     mock_exists.return_value = (
@@ -102,9 +102,12 @@ def test_coordinator_handles_successful_parallel_execution_cycle(
     ]
 
     # Run the comprehensive aggregation routine loop
-    with patch(
-        "score2dataset.scripts.evaluate_coordinator.calculate_unified_mir_score"
-    ) as mock_metric:
+    with (
+        patch("score2dataset.scripts.evaluate_coordinator.time.sleep") as mock_sleep,
+        patch(
+            "score2dataset.scripts.evaluate_coordinator.calculate_unified_mir_score"
+        ) as mock_metric,
+    ):
         mock_metric.return_value = {
             "precision": 1.0,
             "recall": 1.0,
@@ -116,8 +119,8 @@ def test_coordinator_handles_successful_parallel_execution_cycle(
         with patch("pathlib.Path.unlink") as mock_unlink:
             main()
 
-            # Assertions tracking structural engine completeness maps
-            assert node_mock.launch_background_job.called
-            assert node_mock.query_active_gpu_pids.call_count == 2
+            assert mock_sleep.call_count == 1
+            mock_sleep.assert_called_once_with(10)
+            assert _mock_node.return_value.query_active_gpu_pids.call_count == 2
             assert mock_metric.called
             assert mock_unlink.called

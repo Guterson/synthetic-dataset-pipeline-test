@@ -120,7 +120,7 @@ def test_checkpoint_saving_and_loading_lifecycle(tmp_path):
 
 @patch("score2dataset.models.onset_detector.Path.parent")
 def test_handle_eviction_serializes_state_and_triggers_clean_exit(
-    mock_path_parent, _tmp_path
+    mock_path_parent, tmp_path
 ):
     """Verifies that OS eviction triggers capture metrics and raise a clean system exit status."""
     detector = ConcreteTestDetector()

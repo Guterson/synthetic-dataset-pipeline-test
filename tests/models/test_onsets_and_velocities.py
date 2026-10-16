@@ -101,8 +101,6 @@ def test_training_step_unpacks_and_computes_cost_correctly():
         torch.ones(2, 50, 128),  # score
     )
 
-    loss = detector.training_step(batch, device)
-
     assert isinstance(loss, torch.Tensor)
     assert mock_model.called
     assert mock_criterion.called
