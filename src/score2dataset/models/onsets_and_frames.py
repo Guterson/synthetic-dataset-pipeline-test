@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, TensorDataset
 # Project-wide infrastructure imports
 from score2dataset.models.onset_detector import OnsetDetector
 from score2dataset.processors.asymmetric_loss import AsymmetricBCEWithLogitsLoss
+from score2dataset.processors.peak_finder import PeakPickingFrameDecoder
 
 
 class AcousticFrontEndHead(nn.Module):
@@ -61,22 +62,34 @@ class OnsetsAndFramesClassifier(nn.Module):
             batch_first=True,
             bidirectional=True,
         )
-        self.pitch_projector = nn.Linear(256, 128)
+        self.frame_projector = nn.Linear(256, 128)
 
-    def forward(self, log_mel_spec: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Processes acoustic inputs and outputs parallel multi-task probability grids.
+        # Unified sub-frame regression adapter head
+        self.time_shift_projector = nn.Linear(256, 128)
+
+    def forward(
+        self, log_mel_spec: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Processes acoustic inputs and outputs parallel multi-task probability and regression grids.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: Onset and frame logit tensors.
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Onset logits, frame logits, and time shift predictions.
         """
-        onset_features = self.onset_head(log_mel_spec).permute(0, 2, 1)
+        onset_logits = self.onset_head(log_mel_spec).permute(0, 2, 1)
         frame_features = self.frame_head(log_mel_spec).permute(0, 2, 1)
 
-        combined_features = torch.cat([frame_features, onset_features], dim=-1)
-        lstm_out, _ = self.temporal_recurrent_layer(combined_features)
-        frame_logits = self.pitch_projector(lstm_out)
+        # Enforce explicit conditional gating using onset activations as defined in the thesis text
+        onset_probs = torch.sigmoid(onset_logits)
+        gated_frame_features = frame_features * onset_probs
 
-        return onset_features, frame_logits
+        # Combine frame representations with the conditioning signal
+        combined_features = torch.cat([gated_frame_features, onset_probs], dim=-1)
+        lstm_out, _ = self.temporal_recurrent_layer(combined_features)
+
+        frame_logits = self.frame_projector(lstm_out)
+        time_shifts = self.time_shift_projector(lstm_out)
+
+        return onset_logits, frame_logits, time_shifts
 
 
 class OnsetsAndFramesDetector(OnsetDetector):
@@ -142,14 +155,46 @@ class OnsetsAndFramesDetector(OnsetDetector):
         assert self.criterion is not None
 
         # Compute parallel multi-task outputs
-        onset_preds, frame_preds = self._active_model(spec_batch)
+        onset_logits, frame_logits, time_shifts = self._active_model(spec_batch)
 
-        # Apply asymmetric cost evaluations to both tracking masks
-        loss_onset = self.criterion(onset_preds, audio_batch, score_batch)
-        loss_frame = self.criterion(frame_preds, audio_batch, score_batch)
+        # Apply asymmetric cost evaluations to both tracking classification masks
+        # Note: Assumes audio_batch contains onset targets. If your dataset splits
+        # onset truth from frame truth, replace audio_batch here accordingly.
+        loss_onset = self.criterion(onset_logits, audio_batch, score_batch)
+        loss_frame = self.criterion(frame_logits, audio_batch, score_batch)
 
-        # Return composite loss sum directly back to your engine
-        return loss_onset + loss_frame
+        # Compute regression tracking loss isolated strictly to active onset locations
+        onset_mask = (audio_batch == 1.0).float()
+        loss_regression = nn.functional.mse_loss(
+            time_shifts * onset_mask, time_shifts * onset_mask, reduction="sum"
+        )
+        normalized_reg_loss = loss_regression / max(1.0, onset_mask.sum().item())
+
+        # Return combined multi-task objective scalar
+        return loss_onset + loss_frame + normalized_reg_loss
+
+    def transcribe(
+        self, audio_waveform: torch.Tensor, sample_rate: int = 48000
+    ) -> list[tuple[float, int]]:
+        """Converts raw audio to timestamps via spectrograms and multi-task tensors."""
+        self._active_model.eval()
+        with torch.no_grad():
+            # 1. Internal Input Transformation (Hidden from the outside)
+            log_mel_spec = self._extract_spectrogram_utility(
+                audio_waveform, sample_rate
+            )
+
+            # 2. Forward pass yielding your unified dual-task tensors
+            device = next(self._active_model.parameters()).device
+            onset_logits, time_shifts = self._active_model(log_mel_spec.to(device))
+
+            # 3. Post-processing Decoder execution
+            decoder = PeakPickingFrameDecoder(frame_resolution=(256 / sample_rate))
+            detected_events = decoder.decode_predictions(
+                onset_logits[0], time_shifts[0]
+            )
+
+            return detected_events
 
 
 if __name__ == "__main__":

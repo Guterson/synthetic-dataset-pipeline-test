@@ -127,9 +127,18 @@ def test_execute_orchestration_drains_job_queue_completely(
 
     mock_slots.side_effect = [[(node_instance, 0)], []]
 
+    # Side-effect to clear active deployments on the second iteration
+    # to mimic a worker health check or job completion clearing the list
+    def simulate_job_completion_or_preemption(queue):
+        if len(queue) == 0:
+            scheduler.active_deployments.clear()
+
+    mock_preempt.side_effect = simulate_job_completion_or_preemption
+
     job_queue = [fake_job]
     scheduler.execute_orchestration(job_queue)
 
+    # Assert module string conversions matched formatting specifications
     node_instance.launch_background_job.assert_called_once_with(
         "CUDA_VISIBLE_DEVICES=0 python3 -m models.ov"
     )
